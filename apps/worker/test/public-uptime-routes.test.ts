@@ -220,3 +220,81 @@ describe('public routes uptime regression', () => {
     });
   });
 });
+
+describe('public incident feed regression', () => {
+  const originalCaches = (globalThis as { caches?: unknown }).caches;
+
+  beforeEach(() => {
+    installCacheMock(new Map());
+  });
+
+  afterEach(() => {
+    if (originalCaches === undefined) {
+      delete (globalThis as { caches?: unknown }).caches;
+    } else {
+      Object.defineProperty(globalThis, 'caches', {
+        configurable: true,
+        value: originalCaches,
+      });
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('filters anonymous incident feeds in SQL before applying the active limit', async () => {
+    const now = 1_728_520_000;
+    const activeIncidentSqls: string[] = [];
+    const activeIncidentArgs: unknown[][] = [];
+
+    const handlers: FakeD1QueryHandler[] = [
+      {
+        match: (sql) => sql.includes('from incidents') && sql.includes("where status != 'resolved'"),
+        all: (args, sql) => {
+          activeIncidentArgs.push([...args]);
+          activeIncidentSqls.push(sql);
+          return [
+            {
+              id: 2,
+              title: 'Shared API latency',
+              status: 'monitoring',
+              impact: 'minor',
+              message: 'Customer-visible',
+              started_at: now - 300,
+              resolved_at: null,
+            },
+          ];
+        },
+      },
+      {
+        match: 'from incident_updates',
+        all: () => [],
+      },
+      {
+        match: 'from incident_monitors',
+        all: () => [{ incident_id: 2, monitor_id: 11 }],
+      },
+      {
+        match: (sql) => sql.includes('from monitors') && sql.includes('show_on_status_page = 1'),
+        all: () => [{ id: 11 }],
+      },
+    ];
+
+    const { res, body } = await requestPublic('/incidents?limit=1', handlers);
+
+    expect(res.status).toBe(200);
+    expect(activeIncidentArgs[0]).toEqual([1]);
+    expect(activeIncidentSqls[0]).toContain('limit ?1');
+    expect(activeIncidentSqls[0]).toContain('not exists');
+    expect(activeIncidentSqls[0]).toContain('show_on_status_page = 1');
+    expect(body).toMatchObject({
+      incidents: [
+        {
+          id: 2,
+          status: 'monitoring',
+          monitor_ids: [11],
+          updates: [],
+        },
+      ],
+      next_cursor: null,
+    });
+  });
+});

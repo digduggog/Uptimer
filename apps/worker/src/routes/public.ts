@@ -7,8 +7,12 @@ import type { Env } from '../env';
 import { hasValidAdminTokenRequest } from '../middleware/auth';
 import { computePublicStatusPayload } from '../public/status';
 import {
+  buildNumberedPlaceholders,
+  chunkPositiveIntegerIds,
   filterStatusPageScopedMonitorIds,
+  incidentStatusPageVisibilityPredicate,
   listStatusPageVisibleMonitorIds,
+  maintenanceWindowStatusPageVisibilityPredicate,
   monitorVisibilityPredicate,
   shouldIncludeStatusPageScopedItem,
 } from '../public/visibility';
@@ -359,24 +363,25 @@ async function listIncidentUpdatesByIncidentId(
   incidentIds: number[],
 ): Promise<Map<number, IncidentUpdateRow[]>> {
   const byIncident = new Map<number, IncidentUpdateRow[]>();
-  if (incidentIds.length === 0) return byIncident;
 
-  const placeholders = incidentIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT id, incident_id, status, message, created_at
-    FROM incident_updates
-    WHERE incident_id IN (${placeholders})
-    ORDER BY incident_id, created_at, id
-  `;
+  for (const ids of chunkPositiveIntegerIds(incidentIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT id, incident_id, status, message, created_at
+      FROM incident_updates
+      WHERE incident_id IN (${placeholders})
+      ORDER BY incident_id, created_at, id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...incidentIds)
-    .all<IncidentUpdateRow>();
-  for (const r of results ?? []) {
-    const existing = byIncident.get(r.incident_id) ?? [];
-    existing.push(r);
-    byIncident.set(r.incident_id, existing);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<IncidentUpdateRow>();
+    for (const r of results ?? []) {
+      const existing = byIncident.get(r.incident_id) ?? [];
+      existing.push(r);
+      byIncident.set(r.incident_id, existing);
+    }
   }
 
   return byIncident;
@@ -387,24 +392,25 @@ async function listIncidentMonitorIdsByIncidentId(
   incidentIds: number[],
 ): Promise<Map<number, number[]>> {
   const byIncident = new Map<number, number[]>();
-  if (incidentIds.length === 0) return byIncident;
 
-  const placeholders = incidentIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT incident_id, monitor_id
-    FROM incident_monitors
-    WHERE incident_id IN (${placeholders})
-    ORDER BY incident_id, monitor_id
-  `;
+  for (const ids of chunkPositiveIntegerIds(incidentIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT incident_id, monitor_id
+      FROM incident_monitors
+      WHERE incident_id IN (${placeholders})
+      ORDER BY incident_id, monitor_id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...incidentIds)
-    .all<IncidentMonitorLinkRow>();
-  for (const r of results ?? []) {
-    const existing = byIncident.get(r.incident_id) ?? [];
-    existing.push(r.monitor_id);
-    byIncident.set(r.incident_id, existing);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<IncidentMonitorLinkRow>();
+    for (const r of results ?? []) {
+      const existing = byIncident.get(r.incident_id) ?? [];
+      existing.push(r.monitor_id);
+      byIncident.set(r.incident_id, existing);
+    }
   }
 
   return byIncident;
@@ -441,81 +447,28 @@ async function listMaintenanceWindowMonitorIdsByWindowId(
   windowIds: number[],
 ): Promise<Map<number, number[]>> {
   const byWindow = new Map<number, number[]>();
-  if (windowIds.length === 0) return byWindow;
 
-  const placeholders = windowIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT maintenance_window_id, monitor_id
-    FROM maintenance_window_monitors
-    WHERE maintenance_window_id IN (${placeholders})
-    ORDER BY maintenance_window_id, monitor_id
-  `;
+  for (const ids of chunkPositiveIntegerIds(windowIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT maintenance_window_id, monitor_id
+      FROM maintenance_window_monitors
+      WHERE maintenance_window_id IN (${placeholders})
+      ORDER BY maintenance_window_id, monitor_id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...windowIds)
-    .all<MaintenanceWindowMonitorLinkRow>();
-  for (const r of results ?? []) {
-    const existing = byWindow.get(r.maintenance_window_id) ?? [];
-    existing.push(r.monitor_id);
-    byWindow.set(r.maintenance_window_id, existing);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<MaintenanceWindowMonitorLinkRow>();
+    for (const r of results ?? []) {
+      const existing = byWindow.get(r.maintenance_window_id) ?? [];
+      existing.push(r.monitor_id);
+      byWindow.set(r.maintenance_window_id, existing);
+    }
   }
 
   return byWindow;
-}
-
-async function listIncidentRowsVisibleOnStatusPage(
-  db: D1Database,
-  rows: IncidentRow[],
-  includeHiddenMonitors: boolean,
-): Promise<IncidentRow[]> {
-  if (includeHiddenMonitors || rows.length === 0) return rows;
-
-  const monitorIdsByIncidentId = await listIncidentMonitorIdsByIncidentId(
-    db,
-    rows.map((row) => row.id),
-  );
-  const visibleMonitorIds = await listStatusPageVisibleMonitorIds(
-    db,
-    [...monitorIdsByIncidentId.values()].flat(),
-  );
-
-  return rows.filter((row) => {
-    const originalMonitorIds = monitorIdsByIncidentId.get(row.id) ?? [];
-    const filteredMonitorIds = filterStatusPageScopedMonitorIds(
-      originalMonitorIds,
-      visibleMonitorIds,
-      includeHiddenMonitors,
-    );
-    return shouldIncludeStatusPageScopedItem(originalMonitorIds, filteredMonitorIds);
-  });
-}
-
-async function listMaintenanceWindowRowsVisibleOnStatusPage(
-  db: D1Database,
-  rows: MaintenanceWindowRow[],
-  includeHiddenMonitors: boolean,
-): Promise<MaintenanceWindowRow[]> {
-  if (includeHiddenMonitors || rows.length === 0) return rows;
-
-  const monitorIdsByWindowId = await listMaintenanceWindowMonitorIdsByWindowId(
-    db,
-    rows.map((row) => row.id),
-  );
-  const visibleMonitorIds = await listStatusPageVisibleMonitorIds(
-    db,
-    [...monitorIdsByWindowId.values()].flat(),
-  );
-
-  return rows.filter((row) => {
-    const originalMonitorIds = monitorIdsByWindowId.get(row.id) ?? [];
-    const filteredMonitorIds = filterStatusPageScopedMonitorIds(
-      originalMonitorIds,
-      visibleMonitorIds,
-      includeHiddenMonitors,
-    );
-    return shouldIncludeStatusPageScopedItem(originalMonitorIds, filteredMonitorIds);
-  });
 }
 
 publicRoutes.get('/status', async (c) => {
@@ -597,6 +550,7 @@ publicRoutes.get('/incidents', async (c) => {
       .optional()
       .default(0)
       .parse(c.req.query('resolved_only')) === 1;
+  const incidentVisibilitySql = incidentStatusPageVisibilityPredicate(includeHiddenMonitors);
 
   let active: IncidentRow[] = [];
   let remaining = limit;
@@ -607,16 +561,15 @@ publicRoutes.get('/incidents', async (c) => {
         SELECT id, title, status, impact, message, started_at, resolved_at
         FROM incidents
         WHERE status != 'resolved'
+          AND ${incidentVisibilitySql}
         ORDER BY started_at DESC, id DESC
+        LIMIT ?1
       `,
-    ).all<IncidentRow>();
+    )
+      .bind(limit)
+      .all<IncidentRow>();
 
-    active = await listIncidentRowsVisibleOnStatusPage(
-      c.env.DB,
-      activeRows ?? [],
-      includeHiddenMonitors,
-    );
-    active = active.slice(0, limit);
+    active = activeRows ?? [];
     remaining = Math.max(0, limit - active.length);
   }
 
@@ -628,6 +581,7 @@ publicRoutes.get('/incidents', async (c) => {
       SELECT id, title, status, impact, message, started_at, resolved_at
       FROM incidents
       WHERE status = 'resolved'
+        AND ${incidentVisibilitySql}
     `;
 
     const resolvedLimitPlusOne = remaining + 1;
@@ -660,12 +614,7 @@ publicRoutes.get('/incidents', async (c) => {
       const allResolved = resolvedRows ?? [];
       if (allResolved.length === 0) break;
 
-      const visibleResolved = await listIncidentRowsVisibleOnStatusPage(
-        c.env.DB,
-        allResolved,
-        includeHiddenMonitors,
-      );
-      collected.push(...visibleResolved);
+      collected.push(...allResolved);
 
       const lastRow = allResolved[allResolved.length - 1];
       if (allResolved.length < batchLimit || !lastRow) break;
@@ -725,10 +674,14 @@ publicRoutes.get('/maintenance-windows', async (c) => {
   const cursor = z.coerce.number().int().positive().optional().parse(c.req.query('cursor'));
 
   const now = Math.floor(Date.now() / 1000);
+  const maintenanceVisibilitySql = maintenanceWindowStatusPageVisibilityPredicate(
+    includeHiddenMonitors,
+  );
   const baseSql = `
     SELECT id, title, message, starts_at, ends_at, created_at
     FROM maintenance_windows
     WHERE ends_at <= ?1
+      AND ${maintenanceVisibilitySql}
   `;
   const limitPlusOne = limit + 1;
   const batchLimit = Math.max(50, limitPlusOne);
@@ -760,12 +713,7 @@ publicRoutes.get('/maintenance-windows', async (c) => {
     const allWindows = windowRows ?? [];
     if (allWindows.length === 0) break;
 
-    const visibleWindows = await listMaintenanceWindowRowsVisibleOnStatusPage(
-      c.env.DB,
-      allWindows,
-      includeHiddenMonitors,
-    );
-    collected.push(...visibleWindows);
+    collected.push(...allWindows);
 
     const lastRow = allWindows[allWindows.length - 1];
     if (allWindows.length < batchLimit || !lastRow) break;

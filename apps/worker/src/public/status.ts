@@ -7,8 +7,12 @@ import {
   sumIntervals,
 } from '../analytics/uptime';
 import {
+  buildNumberedPlaceholders,
+  chunkPositiveIntegerIds,
   filterStatusPageScopedMonitorIds,
+  incidentStatusPageVisibilityPredicate,
   listStatusPageVisibleMonitorIds,
+  maintenanceWindowStatusPageVisibilityPredicate,
   monitorVisibilityPredicate,
   shouldIncludeStatusPageScopedItem,
 } from './visibility';
@@ -260,22 +264,23 @@ async function listIncidentUpdatesByIncidentId(
   incidentIds: number[],
 ): Promise<Map<number, IncidentUpdateRow[]>> {
   const byIncident = new Map<number, IncidentUpdateRow[]>();
-  if (incidentIds.length === 0) return byIncident;
 
-  const placeholders = incidentIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT id, incident_id, status, message, created_at
-    FROM incident_updates
-    WHERE incident_id IN (${placeholders})
-    ORDER BY incident_id, created_at, id
-  `;
+  for (const ids of chunkPositiveIntegerIds(incidentIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT id, incident_id, status, message, created_at
+      FROM incident_updates
+      WHERE incident_id IN (${placeholders})
+      ORDER BY incident_id, created_at, id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...incidentIds)
-    .all<IncidentUpdateRow>();
-  for (const r of results ?? []) {
-    appendMapValue(byIncident, r.incident_id, r);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<IncidentUpdateRow>();
+    for (const r of results ?? []) {
+      appendMapValue(byIncident, r.incident_id, r);
+    }
   }
 
   return byIncident;
@@ -286,22 +291,23 @@ async function listIncidentMonitorIdsByIncidentId(
   incidentIds: number[],
 ): Promise<Map<number, number[]>> {
   const byIncident = new Map<number, number[]>();
-  if (incidentIds.length === 0) return byIncident;
 
-  const placeholders = incidentIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT incident_id, monitor_id
-    FROM incident_monitors
-    WHERE incident_id IN (${placeholders})
-    ORDER BY incident_id, monitor_id
-  `;
+  for (const ids of chunkPositiveIntegerIds(incidentIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT incident_id, monitor_id
+      FROM incident_monitors
+      WHERE incident_id IN (${placeholders})
+      ORDER BY incident_id, monitor_id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...incidentIds)
-    .all<IncidentMonitorLinkRow>();
-  for (const r of results ?? []) {
-    appendMapValue(byIncident, r.incident_id, r.monitor_id);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<IncidentMonitorLinkRow>();
+    for (const r of results ?? []) {
+      appendMapValue(byIncident, r.incident_id, r.monitor_id);
+    }
   }
 
   return byIncident;
@@ -312,22 +318,23 @@ async function listMaintenanceWindowMonitorIdsByWindowId(
   windowIds: number[],
 ): Promise<Map<number, number[]>> {
   const byWindow = new Map<number, number[]>();
-  if (windowIds.length === 0) return byWindow;
 
-  const placeholders = windowIds.map((_, idx) => `?${idx + 1}`).join(', ');
-  const sql = `
-    SELECT maintenance_window_id, monitor_id
-    FROM maintenance_window_monitors
-    WHERE maintenance_window_id IN (${placeholders})
-    ORDER BY maintenance_window_id, monitor_id
-  `;
+  for (const ids of chunkPositiveIntegerIds(windowIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length);
+    const sql = `
+      SELECT maintenance_window_id, monitor_id
+      FROM maintenance_window_monitors
+      WHERE maintenance_window_id IN (${placeholders})
+      ORDER BY maintenance_window_id, monitor_id
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...windowIds)
-    .all<MaintenanceWindowMonitorLinkRow>();
-  for (const r of results ?? []) {
-    appendMapValue(byWindow, r.maintenance_window_id, r.monitor_id);
+    const { results } = await db
+      .prepare(sql)
+      .bind(...ids)
+      .all<MaintenanceWindowMonitorLinkRow>();
+    for (const r of results ?? []) {
+      appendMapValue(byWindow, r.maintenance_window_id, r.monitor_id);
+    }
   }
 
   return byWindow;
@@ -338,23 +345,28 @@ async function listActiveMaintenanceMonitorIds(
   at: number,
   monitorIds: number[],
 ): Promise<Set<number>> {
-  const ids = [...new Set(monitorIds)];
-  if (ids.length === 0) return new Set();
+  const activeMonitorIds = new Set<number>();
 
-  const placeholders = ids.map((_, idx) => `?${idx + 2}`).join(', ');
-  const sql = `
-    SELECT DISTINCT mwm.monitor_id
-    FROM maintenance_window_monitors mwm
-    JOIN maintenance_windows mw ON mw.id = mwm.maintenance_window_id
-    WHERE mw.starts_at <= ?1 AND mw.ends_at > ?1
-      AND mwm.monitor_id IN (${placeholders})
-  `;
+  for (const ids of chunkPositiveIntegerIds(monitorIds)) {
+    const placeholders = buildNumberedPlaceholders(ids.length, 2);
+    const sql = `
+      SELECT DISTINCT mwm.monitor_id
+      FROM maintenance_window_monitors mwm
+      JOIN maintenance_windows mw ON mw.id = mwm.maintenance_window_id
+      WHERE mw.starts_at <= ?1 AND mw.ends_at > ?1
+        AND mwm.monitor_id IN (${placeholders})
+    `;
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(at, ...ids)
-    .all<{ monitor_id: number }>();
-  return new Set((results ?? []).map((r) => r.monitor_id));
+    const { results } = await db
+      .prepare(sql)
+      .bind(at, ...ids)
+      .all<{ monitor_id: number }>();
+    for (const row of results ?? []) {
+      activeMonitorIds.add(row.monitor_id);
+    }
+  }
+
+  return activeMonitorIds;
 }
 
 function utcDayStart(timestampSec: number): number {
@@ -776,6 +788,11 @@ export async function computePublicStatusPayload(
               ? 'paused'
               : 'unknown';
 
+  const incidentVisibilitySql = incidentStatusPageVisibilityPredicate(includeHiddenMonitors);
+  const maintenanceVisibilitySql = maintenanceWindowStatusPageVisibilityPredicate(
+    includeHiddenMonitors,
+  );
+
   const [
     { results: activeIncidents },
     { results: activeMaintenanceWindows },
@@ -788,10 +805,12 @@ export async function computePublicStatusPayload(
       SELECT id, title, status, impact, message, started_at, resolved_at
       FROM incidents
       WHERE status != 'resolved'
+        AND ${incidentVisibilitySql}
       ORDER BY started_at DESC, id DESC
+      LIMIT ?1
     `,
       )
-      .bind()
+      .bind(STATUS_ACTIVE_INCIDENT_LIMIT)
       .all<IncidentRow>(),
     db
       .prepare(
@@ -799,10 +818,12 @@ export async function computePublicStatusPayload(
       SELECT id, title, message, starts_at, ends_at, created_at
       FROM maintenance_windows
       WHERE starts_at <= ?1 AND ends_at > ?1
+        AND ${maintenanceVisibilitySql}
       ORDER BY starts_at ASC, id ASC
+      LIMIT ?2
     `,
       )
-      .bind(now)
+      .bind(now, STATUS_ACTIVE_MAINTENANCE_LIMIT)
       .all<MaintenanceWindowRow>(),
     db
       .prepare(
@@ -810,10 +831,12 @@ export async function computePublicStatusPayload(
       SELECT id, title, message, starts_at, ends_at, created_at
       FROM maintenance_windows
       WHERE starts_at > ?1
+        AND ${maintenanceVisibilitySql}
       ORDER BY starts_at ASC, id ASC
+      LIMIT ?2
     `,
       )
-      .bind(now)
+      .bind(now, STATUS_UPCOMING_MAINTENANCE_LIMIT)
       .all<MaintenanceWindowRow>(),
     readSettings(db),
   ]);
