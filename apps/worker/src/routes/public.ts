@@ -28,7 +28,6 @@ import {
   readStatusSnapshot,
   readStatusSnapshotJson,
   readStaleHomepageSnapshot,
-  readStaleHomepageSnapshotJson,
   readStaleHomepageSnapshotArtifact,
   readStaleHomepageSnapshotArtifactJson,
   toSnapshotPayload,
@@ -590,16 +589,6 @@ publicRoutes.get('/homepage', async (c) => {
     c.header('Content-Type', 'application/json; charset=utf-8');
     const res = c.body(snapshot.bodyJson);
     applyHomepageCacheHeaders(res, snapshot.age);
-    return res;
-  }
-
-  // If the full homepage snapshot is stale, prefer serving it over recomputing in the hot path.
-  // This keeps the request CPU deterministic (compute happens via scheduled/admin refresh).
-  const stale = await readStaleHomepageSnapshotJson(c.env.DB, now);
-  if (stale) {
-    c.header('Content-Type', 'application/json; charset=utf-8');
-    const res = c.body(stale.bodyJson);
-    applyHomepageCacheHeaders(res, Math.min(60, stale.age));
     return res;
   }
 

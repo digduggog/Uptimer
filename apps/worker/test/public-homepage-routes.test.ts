@@ -320,27 +320,6 @@ describe('public homepage route', () => {
     expect(dbReads).toEqual(['homepage', 'homepage']);
   });
 
-  it('serves a bounded stale homepage snapshot instead of computing in-request', async () => {
-    const payload = samplePayload(100);
-    vi.spyOn(Date, 'now').mockReturnValue(200_000);
-
-    const res = await requestHomepage([
-      {
-        match: 'from public_snapshots',
-        first: () => ({
-          generated_at: payload.generated_at,
-          body_json: JSON.stringify(payload),
-        }),
-      },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(payload);
-    expect(res.headers.get('Cache-Control')).toBe(
-      'public, max-age=0, stale-while-revalidate=0, stale-if-error=0',
-    );
-  });
-
   it('falls back to the fresh public status snapshot when the full homepage snapshot is missing', async () => {
     const now = 200;
     vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
