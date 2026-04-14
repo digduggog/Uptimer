@@ -16,6 +16,11 @@ const READ_SNAPSHOT_SQL = `
   FROM public_snapshots
   WHERE key = ?1
 `;
+const READ_SNAPSHOT_GENERATED_AT_SQL = `
+  SELECT generated_at
+  FROM public_snapshots
+  WHERE key = ?1
+`;
 const UPSERT_SNAPSHOT_SQL = `
   INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
   VALUES (?1, ?2, ?3, ?4)
@@ -37,6 +42,7 @@ export type PublicHomepageRenderArtifact = {
 };
 
 const readSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const readSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 const upsertSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 
 function withTraceSync<T>(trace: Trace | undefined, name: string, fn: () => T): T {
@@ -458,6 +464,22 @@ async function readSnapshotRow(
   }
 }
 
+async function readSnapshotGeneratedAt(db: D1Database, key: string): Promise<number | null> {
+  try {
+    const cached = readSnapshotGeneratedAtStatementByDb.get(db);
+    const statement = cached ?? db.prepare(READ_SNAPSHOT_GENERATED_AT_SQL);
+    if (!cached) {
+      readSnapshotGeneratedAtStatementByDb.set(db, statement);
+    }
+
+    const row = await statement.bind(key).first<{ generated_at: number }>();
+    return row?.generated_at ?? null;
+  } catch (err) {
+    console.warn('homepage snapshot: read generated_at failed', err);
+    return null;
+  }
+}
+
 async function readHomepageSnapshotRow(db: D1Database) {
   return readSnapshotRow(db, SNAPSHOT_KEY);
 }
@@ -713,15 +735,16 @@ export async function readStaleHomepageSnapshotArtifactJson(
 export async function readHomepageSnapshotGeneratedAt(
   db: D1Database,
 ): Promise<number | null> {
-  const row = await readHomepageSnapshotRow(db);
-  return row?.generated_at ?? null;
+  return await readSnapshotGeneratedAt(db, SNAPSHOT_KEY);
 }
 
 export async function readHomepageArtifactSnapshotGeneratedAt(
   db: D1Database,
 ): Promise<number | null> {
-  const row = await readHomepageArtifactSnapshotRow(db);
-  return row?.generated_at ?? null;
+  return (
+    (await readSnapshotGeneratedAt(db, SNAPSHOT_ARTIFACT_KEY)) ??
+    (await readSnapshotGeneratedAt(db, SNAPSHOT_KEY))
+  );
 }
 
 function homepageSnapshotUpsertStatement(

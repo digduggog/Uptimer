@@ -12,8 +12,14 @@ const READ_SNAPSHOT_SQL = `
   FROM public_snapshots
   WHERE key = ?1
 `;
+const READ_SNAPSHOT_GENERATED_AT_SQL = `
+  SELECT generated_at
+  FROM public_snapshots
+  WHERE key = ?1
+`;
 
 const readSnapshotStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
+const readSnapshotGeneratedAtStatementByDb = new WeakMap<D1Database, D1PreparedStatement>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -92,17 +98,33 @@ async function readSnapshotRow(
   }
 }
 
+async function readSnapshotGeneratedAt(db: D1Database, key: string): Promise<number | null> {
+  try {
+    const cached = readSnapshotGeneratedAtStatementByDb.get(db);
+    const statement = cached ?? db.prepare(READ_SNAPSHOT_GENERATED_AT_SQL);
+    if (!cached) {
+      readSnapshotGeneratedAtStatementByDb.set(db, statement);
+    }
+
+    const row = await statement.bind(key).first<{ generated_at: number }>();
+    return row?.generated_at ?? null;
+  } catch (err) {
+    console.warn('homepage snapshot: read generated_at failed', err);
+    return null;
+  }
+}
+
 export async function readHomepageSnapshotGeneratedAt(db: D1Database): Promise<number | null> {
-  const row = await readSnapshotRow(db, SNAPSHOT_KEY);
-  return row?.generated_at ?? null;
+  return await readSnapshotGeneratedAt(db, SNAPSHOT_KEY);
 }
 
 export async function readHomepageArtifactSnapshotGeneratedAt(
   db: D1Database,
 ): Promise<number | null> {
-  const row =
-    (await readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY)) ?? (await readSnapshotRow(db, SNAPSHOT_KEY));
-  return row?.generated_at ?? null;
+  return (
+    (await readSnapshotGeneratedAt(db, SNAPSHOT_ARTIFACT_KEY)) ??
+    (await readSnapshotGeneratedAt(db, SNAPSHOT_KEY))
+  );
 }
 
 export function applyHomepageCacheHeaders(res: Response, ageSeconds: number): void {

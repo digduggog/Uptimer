@@ -55,6 +55,7 @@ async function refreshHomepageSnapshotViaService(env: Env): Promise<HomepageRefr
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
+        'X-Uptimer-Refresh-Source': 'scheduled',
       },
       body: env.ADMIN_TOKEN,
     }),

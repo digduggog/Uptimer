@@ -10,6 +10,10 @@ function normalizeTruthyHeader(value: string | null): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
+function isScheduledRefreshRequest(request: Request): boolean {
+  return request.headers.get('X-Uptimer-Refresh-Source') === 'scheduled';
+}
+
 function isSameMinute(a: number, b: number): boolean {
   return Math.floor(a / 60) === Math.floor(b / 60);
 }
@@ -77,6 +81,10 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
     trace.setLabel('route', 'internal/homepage-refresh');
     trace.setLabel('now', now);
   }
+  const skipInitialFreshnessCheck = isScheduledRefreshRequest(request);
+  if (trace?.enabled && skipInitialFreshnessCheck) {
+    trace.setLabel('skip_initial_freshness_check', '1');
+  }
 
   try {
     const { readHomepageSnapshotGeneratedAt } = trace
@@ -86,22 +94,24 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
         )
       : await import('./snapshots/public-homepage-read');
 
-    const generatedAt = trace
-      ? await trace.timeAsync(
-          'homepage_refresh_read_generated_at_1',
-          async () => await readHomepageSnapshotGeneratedAt(env.DB),
-        )
-      : await readHomepageSnapshotGeneratedAt(env.DB);
-    if (generatedAt !== null && isSameMinute(generatedAt, now)) {
-      if (trace?.enabled) {
-        trace.setLabel('skip', 'fresh');
+    if (!skipInitialFreshnessCheck) {
+      const generatedAt = trace
+        ? await trace.timeAsync(
+            'homepage_refresh_read_generated_at_1',
+            async () => await readHomepageSnapshotGeneratedAt(env.DB),
+          )
+        : await readHomepageSnapshotGeneratedAt(env.DB);
+      if (generatedAt !== null && isSameMinute(generatedAt, now)) {
+        if (trace?.enabled) {
+          trace.setLabel('skip', 'fresh');
+        }
+        return finalizeInternalRefreshResponse(
+          buildInternalRefreshResponse(true, false),
+          trace,
+          traceMod,
+          { refreshed: false },
+        );
       }
-      return finalizeInternalRefreshResponse(
-        buildInternalRefreshResponse(true, false),
-        trace,
-        traceMod,
-        { refreshed: false },
-      );
     }
 
     const { acquireLease } = trace
