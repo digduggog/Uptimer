@@ -69,6 +69,7 @@ type HomepageUptimeDayStripAggRawRow = [
 type HomepageMonitorDataOptions = {
   cardLimit?: number;
   uptimeRatingLevel?: 1 | 2 | 3 | 4 | 5;
+  maintenanceMonitorIdsPromise?: Promise<ReadonlySet<number>>;
   trace?: Trace;
 };
 
@@ -134,10 +135,7 @@ function incidentSummaryFromStatusIncident(
   };
 }
 
-function toMaintenancePreview(
-  row: MaintenanceWindowRow,
-  monitorIds: number[],
-): MaintenancePreview {
+function toMaintenancePreview(row: MaintenanceWindowRow, monitorIds: number[]): MaintenancePreview {
   return {
     id: row.id,
     title: row.title,
@@ -146,6 +144,20 @@ function toMaintenancePreview(
     ends_at: row.ends_at,
     monitor_ids: monitorIds,
   };
+}
+
+function collectMaintenanceMonitorIds(
+  windows: Array<{ monitorIds: number[] }>,
+): ReadonlySet<number> {
+  const monitorIds = new Set<number>();
+  for (const window of windows) {
+    for (const monitorId of window.monitorIds) {
+      if (typeof monitorId === 'number') {
+        monitorIds.add(monitorId);
+      }
+    }
+  }
+  return monitorIds;
 }
 
 function maintenancePreviewFromStatusWindow(
@@ -562,18 +574,21 @@ async function buildHomepageMonitorCardsFromRows(
   );
 
   const todayByMonitorIdPromise: Promise<Map<number, UptimeWindowTotals>> = needsToday
-    ? withTraceAsync(trace, 'homepage_cards_today_query', async () =>
-        await computeTodayPartialUptimeBatch(
-          db,
-          rows.map((monitor) => ({
-            id: monitor.id,
-            interval_sec: monitor.interval_sec,
-            created_at: monitor.created_at,
-            last_checked_at: monitor.last_checked_at,
-          })),
-          Math.max(todayStartAt, rangeStart),
-          rangeEnd,
-        ),
+    ? withTraceAsync(
+        trace,
+        'homepage_cards_today_query',
+        async () =>
+          await computeTodayPartialUptimeBatch(
+            db,
+            rows.map((monitor) => ({
+              id: monitor.id,
+              interval_sec: monitor.interval_sec,
+              created_at: monitor.created_at,
+              last_checked_at: monitor.last_checked_at,
+            })),
+            Math.max(todayStartAt, rangeStart),
+            rangeEnd,
+          ),
       )
     : Promise.resolve(new Map<number, UptimeWindowTotals>());
 
@@ -663,21 +678,36 @@ async function buildHomepageMonitorData(
   uptimeRatingLevel: 1 | 2 | 3 | 4 | 5;
 }> {
   const trace = opts.trace;
-  const rawMonitors = await withTraceAsync(trace, 'homepage_monitor_rows', async () =>
-    await listHomepageMonitorRows(db, includeHiddenMonitors),
+  const rawMonitors = await withTraceAsync(
+    trace,
+    'homepage_monitor_rows',
+    async () => await listHomepageMonitorRows(db, includeHiddenMonitors),
   );
   const monitorCountTotal = rawMonitors.length;
   const ids = rawMonitors.map((monitor) => monitor.id);
   const selectedRows =
     opts.cardLimit === undefined ? rawMonitors : rawMonitors.slice(0, Math.max(0, opts.cardLimit));
 
+  const maintenanceMonitorIdsPromise =
+    opts.maintenanceMonitorIdsPromise === undefined
+      ? withTraceAsync(
+          trace,
+          'homepage_maintenance_monitor_ids',
+          async () => await listHomepageMaintenanceMonitorIds(db, now, ids),
+        )
+      : withTraceAsync(
+          trace,
+          'homepage_maintenance_monitor_ids_reuse',
+          async () => new Set(await opts.maintenanceMonitorIdsPromise),
+        );
+
   const [maintenanceMonitorIds, uptimeRatingLevel] = await Promise.all([
-    withTraceAsync(trace, 'homepage_maintenance_monitor_ids', async () =>
-      await listHomepageMaintenanceMonitorIds(db, now, ids),
-    ),
+    maintenanceMonitorIdsPromise,
     opts.uptimeRatingLevel === undefined
-      ? withTraceAsync(trace, 'homepage_uptime_rating_setting', async () =>
-          await readHomepageUptimeRatingLevel(db),
+      ? withTraceAsync(
+          trace,
+          'homepage_uptime_rating_setting',
+          async () => await readHomepageUptimeRatingLevel(db),
         )
       : Promise.resolve(opts.uptimeRatingLevel),
   ]);
@@ -710,14 +740,11 @@ async function buildHomepageMonitorData(
     };
   }
 
-  const monitors = await withTraceAsync(trace, 'homepage_monitor_cards', async () =>
-    await buildHomepageMonitorCardsFromRows(
-      db,
-      now,
-      selectedRows,
-      maintenanceMonitorIds,
-      trace,
-    ),
+  const monitors = await withTraceAsync(
+    trace,
+    'homepage_monitor_cards',
+    async () =>
+      await buildHomepageMonitorCardsFromRows(db, now, selectedRows, maintenanceMonitorIds, trace),
   );
 
   return {
@@ -775,10 +802,7 @@ async function findLatestVisibleResolvedIncident(
     );
     const visibleMonitorIds = includeHiddenMonitors
       ? new Set<number>()
-      : await listStatusPageVisibleMonitorIds(
-          db,
-          [...monitorIdsByIncidentId.values()].flat(),
-        );
+      : await listStatusPageVisibleMonitorIds(db, [...monitorIdsByIncidentId.values()].flat());
 
     for (const row of rows) {
       const originalMonitorIds = monitorIdsByIncidentId.get(row.id) ?? [];
@@ -806,9 +830,8 @@ async function findLatestVisibleHistoricalMaintenanceWindow(
   now: number,
   includeHiddenMonitors: boolean,
 ): Promise<{ row: MaintenanceWindowRow; monitorIds: number[] } | null> {
-  const maintenanceVisibilitySql = maintenanceWindowStatusPageVisibilityPredicate(
-    includeHiddenMonitors,
-  );
+  const maintenanceVisibilitySql =
+    maintenanceWindowStatusPageVisibilityPredicate(includeHiddenMonitors);
   let cursor: number | null = null;
 
   while (true) {
@@ -850,10 +873,7 @@ async function findLatestVisibleHistoricalMaintenanceWindow(
     );
     const visibleMonitorIds = includeHiddenMonitors
       ? new Set<number>()
-      : await listStatusPageVisibleMonitorIds(
-          db,
-          [...monitorIdsByWindowId.values()].flat(),
-        );
+      : await listStatusPageVisibleMonitorIds(db, [...monitorIdsByWindowId.values()].flat());
 
     for (const row of rows) {
       const originalMonitorIds = monitorIdsByWindowId.get(row.id) ?? [];
@@ -886,11 +906,16 @@ export async function readHomepageHistoryPreviews(
 }> {
   const includeHiddenMonitors = false;
   const [resolvedIncidentPreview, maintenanceHistoryPreview] = await Promise.all([
-    withTraceAsync(trace, 'homepage_history_incident_preview', async () =>
-      await findLatestVisibleResolvedIncident(db, includeHiddenMonitors),
+    withTraceAsync(
+      trace,
+      'homepage_history_incident_preview',
+      async () => await findLatestVisibleResolvedIncident(db, includeHiddenMonitors),
     ),
-    withTraceAsync(trace, 'homepage_history_maintenance_preview', async () =>
-      await findLatestVisibleHistoricalMaintenanceWindow(db, now, includeHiddenMonitors),
+    withTraceAsync(
+      trace,
+      'homepage_history_maintenance_preview',
+      async () =>
+        await findLatestVisibleHistoricalMaintenanceWindow(db, now, includeHiddenMonitors),
     ),
   ]);
 
@@ -965,36 +990,46 @@ export async function computePublicHomepagePayload(
 ): Promise<PublicHomepageResponse> {
   const trace = opts.trace;
   const includeHiddenMonitors = false;
-  const settingsPromise = withTraceAsync(trace, 'homepage_settings', async () =>
-    await readPublicSiteSettings(db),
+  const settingsPromise = withTraceAsync(
+    trace,
+    'homepage_settings',
+    async () => await readPublicSiteSettings(db),
+  );
+  const maintenanceWindowsPromise = withTraceAsync(
+    trace,
+    'homepage_maintenance_windows',
+    async () => await listVisibleMaintenanceWindows(db, now, includeHiddenMonitors),
   );
 
-  const [
-    settings,
-    monitorData,
-    activeIncidents,
-    maintenanceWindows,
-    historyPreviews,
-  ] = await Promise.all([
-    settingsPromise,
-    withTraceAsync(trace, 'homepage_monitor_data', async () =>
-      await settingsPromise.then((resolvedSettings) =>
-        buildHomepageMonitorData(db, now, includeHiddenMonitors, {
-          uptimeRatingLevel: resolvedSettings.uptime_rating_level,
-          ...(trace ? { trace } : {}),
-        }),
+  const [settings, monitorData, activeIncidents, maintenanceWindows, historyPreviews] =
+    await Promise.all([
+      settingsPromise,
+      withTraceAsync(
+        trace,
+        'homepage_monitor_data',
+        async () =>
+          await settingsPromise.then((resolvedSettings) =>
+            buildHomepageMonitorData(db, now, includeHiddenMonitors, {
+              uptimeRatingLevel: resolvedSettings.uptime_rating_level,
+              maintenanceMonitorIdsPromise: maintenanceWindowsPromise.then((resolvedMaintenance) =>
+                collectMaintenanceMonitorIds(resolvedMaintenance.active),
+              ),
+              ...(trace ? { trace } : {}),
+            }),
+          ),
       ),
-    ),
-    withTraceAsync(trace, 'homepage_active_incidents', async () =>
-      await listVisibleActiveIncidents(db, includeHiddenMonitors),
-    ),
-    withTraceAsync(trace, 'homepage_maintenance_windows', async () =>
-      await listVisibleMaintenanceWindows(db, now, includeHiddenMonitors),
-    ),
-    withTraceAsync(trace, 'homepage_history_previews', async () =>
-      await readHomepageHistoryPreviews(db, now, trace),
-    ),
-  ]);
+      withTraceAsync(
+        trace,
+        'homepage_active_incidents',
+        async () => await listVisibleActiveIncidents(db, includeHiddenMonitors),
+      ),
+      maintenanceWindowsPromise,
+      withTraceAsync(
+        trace,
+        'homepage_history_previews',
+        async () => await readHomepageHistoryPreviews(db, now, trace),
+      ),
+    ]);
 
   const activeIncidentSummaries = withTraceSync(trace, 'homepage_present_incidents', () => {
     const summaries = new Array<IncidentSummary>(activeIncidents.length);
@@ -1069,20 +1104,23 @@ export async function computePublicHomepageArtifactPayload(
   const includeHiddenMonitors = false;
   const settingsPromise = readPublicSiteSettings(db);
   const bootstrapRowsPromise = listHomepageMonitorRows(db, includeHiddenMonitors);
-  const [settings, summaryData, bootstrapRows, activeIncidents, maintenanceWindows, historyPreviews] =
-    await Promise.all([
-      settingsPromise,
-      readHomepageMonitorSummary(db, now, includeHiddenMonitors),
-      bootstrapRowsPromise,
-      listVisibleActiveIncidents(db, includeHiddenMonitors),
-      listVisibleMaintenanceWindows(db, now, includeHiddenMonitors),
-      readHomepageHistoryPreviews(db, now),
-    ]);
-  const maintenanceMonitorIds = await listHomepageMaintenanceMonitorIds(
-    db,
-    now,
-    bootstrapRows.map((row) => row.id),
-  );
+  const maintenanceWindowsPromise = listVisibleMaintenanceWindows(db, now, includeHiddenMonitors);
+  const [
+    settings,
+    summaryData,
+    bootstrapRows,
+    activeIncidents,
+    maintenanceWindows,
+    historyPreviews,
+  ] = await Promise.all([
+    settingsPromise,
+    readHomepageMonitorSummary(db, now, includeHiddenMonitors),
+    bootstrapRowsPromise,
+    listVisibleActiveIncidents(db, includeHiddenMonitors),
+    maintenanceWindowsPromise,
+    readHomepageHistoryPreviews(db, now),
+  ]);
+  const maintenanceMonitorIds = collectMaintenanceMonitorIds(maintenanceWindows.active);
   const monitors = await buildHomepageMonitorCardsFromRows(
     db,
     now,
