@@ -1,6 +1,7 @@
 import { AppError } from '../middleware/errors';
 import type { Trace } from '../observability/trace';
 import { acquireLease } from '../scheduler/lock';
+import { primeHomepageRefreshBaseSnapshotCache } from './public-homepage-read';
 import {
   publicHomepageRenderArtifactSchema,
   publicHomepageResponseSchema,
@@ -776,6 +777,15 @@ export async function writeHomepageSnapshot(
 
     await db.batch(statements);
   });
+
+  primeHomepageRefreshBaseSnapshotCache({
+    db,
+    generatedAt: render.generated_at,
+    updatedAt: now,
+    snapshot: payload,
+    renderBodyJson,
+    payloadBodyJson,
+  });
 }
 
 export async function writeHomepageArtifactSnapshot(
@@ -800,6 +810,14 @@ export async function writeHomepageArtifactSnapshot(
       now,
     ).run(),
   );
+
+  primeHomepageRefreshBaseSnapshotCache({
+    db,
+    generatedAt: render.generated_at,
+    updatedAt: now,
+    snapshot: payload,
+    renderBodyJson,
+  });
 }
 
 export function applyHomepageCacheHeaders(res: Response, ageSeconds: number): void {

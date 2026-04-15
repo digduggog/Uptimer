@@ -673,6 +673,45 @@ export async function readHomepageRefreshBaseSnapshot(
   };
 }
 
+export function primeHomepageRefreshBaseSnapshotCache(opts: {
+  db: D1Database;
+  generatedAt: number;
+  updatedAt: number;
+  snapshot: PublicHomepageResponse;
+  renderBodyJson: string;
+  payloadBodyJson?: string | null;
+}): void {
+  const artifactCandidate: SnapshotCandidate = {
+    key: SNAPSHOT_ARTIFACT_KEY,
+    generatedAt: opts.generatedAt,
+    updatedAt: opts.updatedAt,
+  };
+  writeCachedParsedSnapshotRowGlobal(
+    parsedHomepagePayloadCacheGlobal,
+    artifactCandidate,
+    opts.renderBodyJson,
+    opts.snapshot,
+  );
+  writeCachedParsedSnapshotRow(parsedHomepagePayloadCacheByDb, opts.db, artifactCandidate, opts.snapshot);
+
+  if (!opts.payloadBodyJson) {
+    return;
+  }
+
+  const payloadCandidate: SnapshotCandidate = {
+    key: SNAPSHOT_KEY,
+    generatedAt: opts.generatedAt,
+    updatedAt: opts.updatedAt,
+  };
+  writeCachedParsedSnapshotRowGlobal(
+    parsedHomepagePayloadCacheGlobal,
+    payloadCandidate,
+    opts.payloadBodyJson,
+    opts.snapshot,
+  );
+  writeCachedParsedSnapshotRow(parsedHomepagePayloadCacheByDb, opts.db, payloadCandidate, opts.snapshot);
+}
+
 export function applyHomepageCacheHeaders(res: Response, ageSeconds: number): void {
   const remaining = Math.max(0, MAX_AGE_SECONDS - ageSeconds);
   const maxAge = Math.min(30, remaining);
