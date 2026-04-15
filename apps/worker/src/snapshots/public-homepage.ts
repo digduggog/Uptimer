@@ -577,6 +577,22 @@ export async function readHomepageSnapshotJson(
   const age = Math.max(0, now - row.generated_at);
   if (age > MAX_AGE_SECONDS) return null;
 
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
+    const parsedArtifact = safeJsonParse(row.body_json);
+    if (parsedArtifact === null) return null;
+
+    const data = readStoredHomepageSnapshotData(parsedArtifact);
+    if (!data) {
+      console.warn('homepage snapshot: invalid payload');
+      return null;
+    }
+
+    return {
+      bodyJson: JSON.stringify(data),
+      age,
+    };
+  }
+
   if (looksLikeSerializedHomepagePayload(row.body_json)) {
     return {
       bodyJson: row.body_json,
@@ -633,6 +649,22 @@ export async function readStaleHomepageSnapshotJson(
 
   const age = Math.max(0, now - row.generated_at);
   if (age > MAX_STALE_SECONDS) return null;
+
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
+    const parsedArtifact = safeJsonParse(row.body_json);
+    if (parsedArtifact === null) return null;
+
+    const data = readStoredHomepageSnapshotData(parsedArtifact);
+    if (!data) {
+      console.warn('homepage snapshot: invalid stale payload');
+      return null;
+    }
+
+    return {
+      bodyJson: JSON.stringify(data),
+      age,
+    };
+  }
 
   if (looksLikeSerializedHomepagePayload(row.body_json)) {
     return {

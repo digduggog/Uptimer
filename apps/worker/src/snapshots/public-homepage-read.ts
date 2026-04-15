@@ -177,6 +177,17 @@ export async function readHomepageSnapshotJsonAnyAge(
   const age = Math.max(0, now - row.generated_at);
   if (age > maxStaleSeconds) return null;
 
+  if (looksLikeSerializedHomepageArtifact(row.body_json)) {
+    const parsedArtifact = safeJsonParse(row.body_json);
+    if (parsedArtifact === null) return null;
+    const bodyJson = snapshotBodyJsonFromParsed(parsedArtifact);
+    if (!bodyJson) {
+      console.warn('homepage snapshot: invalid payload');
+      return null;
+    }
+    return { bodyJson, age };
+  }
+
   if (looksLikeSerializedHomepagePayload(row.body_json)) {
     return { bodyJson: row.body_json, age };
   }
