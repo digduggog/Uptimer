@@ -40,13 +40,13 @@ function applyCorsHeaders(res: Response, origin: string | null): Response {
   return out;
 }
 
-function corsPreflight(origin: string | null): Response {
+function corsPreflight(origin: string | null, allowedMethods = CORS_ALLOW_METHODS): Response {
   const res = new Response(null, { status: 204 });
   if (origin) {
     res.headers.set('Access-Control-Allow-Origin', origin);
     res.headers.set('Vary', 'Origin');
   }
-  res.headers.set('Access-Control-Allow-Methods', CORS_ALLOW_METHODS);
+  res.headers.set('Access-Control-Allow-Methods', allowedMethods);
   res.headers.set('Access-Control-Allow-Headers', CORS_ALLOW_HEADERS);
   return res;
 }
@@ -361,6 +361,13 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
   if (url.pathname.startsWith('/api/')) {
     if (request.method === 'OPTIONS') {
+      if (
+        hotPathname === '/api/v1/public/status' ||
+        hotPathname === '/api/v1/public/homepage' ||
+        hotPathname === '/api/v1/public/homepage-artifact'
+      ) {
+        return corsPreflight(origin, 'GET, OPTIONS');
+      }
       return corsPreflight(origin);
     }
 

@@ -289,6 +289,14 @@ async function handleInternalScheduledCheckBatch(
   if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) {
     return new Response('Forbidden', { status: 403 });
   }
+  const now = Math.floor(Date.now() / 1000);
+  const currentCheckedAt = Math.floor(now / 60) * 60;
+  if (
+    parsedBody.data.checked_at > currentCheckedAt ||
+    parsedBody.data.checked_at < currentCheckedAt - 60
+  ) {
+    return new Response('Forbidden', { status: 403 });
+  }
 
   const ids = [...new Set(parsedBody.data.ids)];
   const suppressedMonitorIds = new Set(parsedBody.data.suppressed_monitor_ids ?? []);

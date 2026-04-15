@@ -189,4 +189,17 @@ describe('public hot routes', () => {
     expect(res.headers.get('Allow')).toBe('GET, OPTIONS');
     expect(computePublicStatusPayload).not.toHaveBeenCalled();
   });
+
+  it('advertises GET-only preflight headers on hot status paths', async () => {
+    const { res } = await requestStatusViaWorker({
+      method: 'OPTIONS',
+      path: '/api/v1/public/status/',
+      origin: 'https://status-web.example.com',
+      handlers: [],
+    });
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://status-web.example.com');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toBe('GET, OPTIONS');
+  });
 });
