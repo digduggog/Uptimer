@@ -17,6 +17,8 @@ import {
 import type { CheckOutcome } from '../monitor/types';
 import { rebuildPublicMonitorRuntimeSnapshot } from '../public/monitor-runtime-bootstrap';
 import {
+  normalizeRuntimeUpdateLatencyMs,
+  monitorRuntimeUpdateSchema,
   refreshPublicMonitorRuntimeSnapshot,
   type MonitorRuntimeUpdate,
 } from '../public/monitor-runtime';
@@ -35,18 +37,14 @@ const MONITOR_STATE_BINDINGS_PER_ROW = 8;
 const PERSIST_BATCH_SIZE = Math.max(
   1,
   Math.floor(
-    D1_MAX_SQL_VARIABLES /
-      Math.max(CHECK_RESULT_BINDINGS_PER_ROW, MONITOR_STATE_BINDINGS_PER_ROW),
+    D1_MAX_SQL_VARIABLES / Math.max(CHECK_RESULT_BINDINGS_PER_ROW, MONITOR_STATE_BINDINGS_PER_ROW),
   ),
 );
 
-async function refreshHomepageSnapshotInline(
-  env: Env,
-  now: number,
-): Promise<void> {
+async function refreshHomepageSnapshotInline(env: Env, now: number): Promise<void> {
   const [
     { computePublicHomepagePayload },
-    { refreshPublicHomepageSnapshot },
+    { refreshPublicHomepageSnapshotIfNeeded },
     { readHomepageRefreshBaseSnapshot },
   ] = await Promise.all([
     import('../public/homepage'),
@@ -55,7 +53,7 @@ async function refreshHomepageSnapshotInline(
   ]);
   const baseSnapshot = await readHomepageRefreshBaseSnapshot(env.DB, now);
 
-  await refreshPublicHomepageSnapshot({
+  await refreshPublicHomepageSnapshotIfNeeded({
     db: env.DB,
     now,
     compute: () =>
@@ -175,51 +173,13 @@ function toScheduledCheckBatchServiceResult(value: unknown): ScheduledCheckBatch
     throw new Error('service batch missing runtime_updates');
   }
 
-  const runtimeUpdates: MonitorRuntimeUpdate[] = runtimeUpdatesValue
-    .map((item) => {
-      if (!isRecord(item)) {
-        return null;
-      }
-
-      const monitorId = toInteger(item.monitor_id);
-      const intervalSec = toInteger(item.interval_sec);
-      const createdAt = toInteger(item.created_at);
-      const checkedAt = toInteger(item.checked_at);
-      if (
-        monitorId === null ||
-        monitorId <= 0 ||
-        intervalSec === null ||
-        intervalSec <= 0 ||
-        createdAt === null ||
-        createdAt < 0 ||
-        checkedAt === null ||
-        checkedAt < 0
-      ) {
-        return null;
-      }
-
-      const checkStatus =
-        item.check_status === null || typeof item.check_status === 'string'
-          ? item.check_status
-          : null;
-      const nextStatus =
-        item.next_status === null || typeof item.next_status === 'string'
-          ? item.next_status
-          : null;
-      const latencyMs =
-        item.latency_ms === null ? null : toNumber(item.latency_ms);
-
-      return {
-        monitor_id: monitorId,
-        interval_sec: intervalSec,
-        created_at: createdAt,
-        checked_at: checkedAt,
-        check_status: checkStatus,
-        next_status: nextStatus,
-        latency_ms: latencyMs,
-      };
-    })
-    .filter((item): item is MonitorRuntimeUpdate => item !== null);
+  const runtimeUpdates: MonitorRuntimeUpdate[] = runtimeUpdatesValue.map((item, index) => {
+    const parsed = monitorRuntimeUpdateSchema.safeParse(item);
+    if (!parsed.success) {
+      throw new Error(`service batch returned invalid runtime update at index ${index}`);
+    }
+    return parsed.data;
+  });
 
   const stats: MonitorBatchStats = {
     processedCount: Math.max(0, toInteger(value.processed_count) ?? runtimeUpdates.length),
@@ -682,7 +642,7 @@ function toMonitorRuntimeUpdate(completed: CompletedDueMonitor): MonitorRuntimeU
     checked_at: completed.checkedAt,
     check_status: completed.outcome.status,
     next_status: completed.next.status,
-    latency_ms: completed.outcome.latencyMs,
+    latency_ms: normalizeRuntimeUpdateLatencyMs(completed.outcome.latencyMs),
   };
 }
 
@@ -907,7 +867,10 @@ export async function runPersistedMonitorBatch(opts: {
 
   const rejectedCount = settled.filter((result) => result.status === 'rejected').length;
   const completed = settled
-    .filter((result): result is PromiseFulfilledResult<CompletedDueMonitor> => result.status === 'fulfilled')
+    .filter(
+      (result): result is PromiseFulfilledResult<CompletedDueMonitor> =>
+        result.status === 'fulfilled',
+    )
     .map((result) => result.value);
 
   let persistDurMs = 0;
@@ -1066,9 +1029,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
             checkedAt,
             suppressedMonitorIds,
             stateMachineConfig,
-            ...(inlineNotificationHandler
-              ? { onPersistedMonitor: inlineNotificationHandler }
-              : {}),
+            ...(inlineNotificationHandler ? { onPersistedMonitor: inlineNotificationHandler } : {}),
           });
         }
       }),
@@ -1088,9 +1049,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       checkedAt,
       suppressedMonitorIds,
       stateMachineConfig,
-      ...(inlineNotificationHandler
-        ? { onPersistedMonitor: inlineNotificationHandler }
-        : {}),
+      ...(inlineNotificationHandler ? { onPersistedMonitor: inlineNotificationHandler } : {}),
     });
     batchWallDurMs = batch.checksDurMs + batch.persistDurMs;
     runtimeUpdates = batch.runtimeUpdates;

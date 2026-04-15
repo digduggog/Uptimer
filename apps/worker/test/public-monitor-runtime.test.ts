@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyMonitorRuntimeUpdates,
   materializeMonitorRuntimeTotals,
+  monitorRuntimeUpdateSchema,
   readPublicMonitorRuntimeSnapshot,
   runtimeEntryToHeartbeats,
   writePublicMonitorRuntimeSnapshot,
@@ -107,6 +108,22 @@ describe('public/monitor-runtime', () => {
       last_status_code: 'u',
       last_outage_open: false,
       heartbeat_status_codes: 'du',
+    });
+  });
+
+  it('normalizes runtime update latency values to non-negative integers', () => {
+    expect(
+      monitorRuntimeUpdateSchema.parse({
+        monitor_id: 1,
+        interval_sec: 60,
+        created_at: 0,
+        checked_at: 60,
+        check_status: 'up',
+        next_status: 'up',
+        latency_ms: -3.7,
+      }),
+    ).toMatchObject({
+      latency_ms: 0,
     });
   });
 

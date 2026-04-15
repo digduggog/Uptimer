@@ -76,6 +76,13 @@ export type MonitorRuntimeUpdate = {
   latency_ms: number | null;
 };
 
+export function normalizeRuntimeUpdateLatencyMs(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.round(value));
+}
+
 export const monitorRuntimeUpdateSchema = z.object({
   monitor_id: z.number().int().positive(),
   interval_sec: z.number().int().positive(),
@@ -83,7 +90,11 @@ export const monitorRuntimeUpdateSchema = z.object({
   checked_at: z.number().int().nonnegative(),
   check_status: z.string().nullable(),
   next_status: z.string().nullable(),
-  latency_ms: z.number().nullable(),
+  latency_ms: z.preprocess(
+    (value) =>
+      value === null || value === undefined ? null : normalizeRuntimeUpdateLatencyMs(value),
+    z.number().int().nonnegative().nullable(),
+  ),
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -111,14 +122,10 @@ function parseHeartbeatGapSec(value: string): number[] {
 
 function encodeHeartbeatGapSec(gaps: number[]): string {
   if (gaps.length === 0) return '';
-  return gaps
-    .map((gap) => clampNonNegativeInteger(gap).toString(36))
-    .join(',');
+  return gaps.map((gap) => clampNonNegativeInteger(gap).toString(36)).join(',');
 }
 
-function heartbeatsToGapSec(
-  checkedAt: Array<number | null | undefined>,
-): string {
+function heartbeatsToGapSec(checkedAt: Array<number | null | undefined>): string {
   const gaps: number[] = [];
   for (let index = 1; index < checkedAt.length; index += 1) {
     const newer = checkedAt[index - 1];
@@ -134,49 +141,50 @@ function heartbeatsToGapSec(
   return encodeHeartbeatGapSec(gaps);
 }
 
-export function runtimeHeartbeatsToGapSec(
-  checkedAt: Array<number | null | undefined>,
-): string {
+export function runtimeHeartbeatsToGapSec(checkedAt: Array<number | null | undefined>): string {
   return heartbeatsToGapSec(checkedAt);
 }
 
 const runtimeEntrySchema = z
-  .preprocess((value) => {
-    if (!isRecord(value)) return value;
-    if (typeof value.heartbeat_gap_sec === 'string') {
-      return value;
-    }
+  .preprocess(
+    (value) => {
+      if (!isRecord(value)) return value;
+      if (typeof value.heartbeat_gap_sec === 'string') {
+        return value;
+      }
 
-    const legacyCheckedAt = value.heartbeat_checked_at;
-    if (!Array.isArray(legacyCheckedAt)) {
-      return value;
-    }
+      const legacyCheckedAt = value.heartbeat_checked_at;
+      if (!Array.isArray(legacyCheckedAt)) {
+        return value;
+      }
 
-    return {
-      ...value,
-      heartbeat_gap_sec: runtimeHeartbeatsToGapSec(
-        legacyCheckedAt.filter((item): item is number => Number.isInteger(item)),
-      ),
-    };
-  }, z.object({
-    monitor_id: z.number().int().positive(),
-    created_at: z.number().int().nonnegative().nullable().optional().default(null),
-    interval_sec: z.number().int().positive(),
-    range_start_at: z.number().int().nonnegative().nullable(),
-    materialized_at: z.number().int().nonnegative(),
-    last_checked_at: z.number().int().nonnegative().nullable(),
-    last_status_code: z.enum(['u', 'd', 'm', 'p', 'x']),
-    last_outage_open: z.boolean(),
-    total_sec: z.number().int().nonnegative(),
-    downtime_sec: z.number().int().nonnegative(),
-    unknown_sec: z.number().int().nonnegative(),
-    uptime_sec: z.number().int().nonnegative(),
-    heartbeat_gap_sec: z.string(),
-    heartbeat_latency_ms: z
-      .array(z.number().int().nonnegative().nullable())
-      .max(MONITOR_RUNTIME_HEARTBEAT_POINTS),
-    heartbeat_status_codes: z.string().max(MONITOR_RUNTIME_HEARTBEAT_POINTS),
-  }))
+      return {
+        ...value,
+        heartbeat_gap_sec: runtimeHeartbeatsToGapSec(
+          legacyCheckedAt.filter((item): item is number => Number.isInteger(item)),
+        ),
+      };
+    },
+    z.object({
+      monitor_id: z.number().int().positive(),
+      created_at: z.number().int().nonnegative().nullable().optional().default(null),
+      interval_sec: z.number().int().positive(),
+      range_start_at: z.number().int().nonnegative().nullable(),
+      materialized_at: z.number().int().nonnegative(),
+      last_checked_at: z.number().int().nonnegative().nullable(),
+      last_status_code: z.enum(['u', 'd', 'm', 'p', 'x']),
+      last_outage_open: z.boolean(),
+      total_sec: z.number().int().nonnegative(),
+      downtime_sec: z.number().int().nonnegative(),
+      unknown_sec: z.number().int().nonnegative(),
+      uptime_sec: z.number().int().nonnegative(),
+      heartbeat_gap_sec: z.string(),
+      heartbeat_latency_ms: z
+        .array(z.number().int().nonnegative().nullable())
+        .max(MONITOR_RUNTIME_HEARTBEAT_POINTS),
+      heartbeat_status_codes: z.string().max(MONITOR_RUNTIME_HEARTBEAT_POINTS),
+    }),
+  )
   .superRefine((value, ctx) => {
     const count = value.heartbeat_latency_ms.length;
     if (value.heartbeat_latency_ms.length !== count) {
@@ -332,12 +340,7 @@ function upsertRuntimeSnapshotStatement(
     upsertRuntimeSnapshotStatementByDb.set(db, statement);
   }
 
-  return statement.bind(
-    MONITOR_RUNTIME_SNAPSHOT_KEY,
-    generatedAt,
-    bodyJson,
-    now,
-  );
+  return statement.bind(MONITOR_RUNTIME_SNAPSHOT_KEY, generatedAt, bodyJson, now);
 }
 
 function toSnapshotUpdatedAt(row: RuntimeSnapshotMetadataRow): number {
@@ -411,9 +414,9 @@ async function readStoredMonitorRuntimeSnapshot(
   db: D1Database,
 ): Promise<{ generatedAt: number; snapshot: PublicMonitorRuntimeSnapshot } | null> {
   try {
-    const metadata = await readRuntimeSnapshotMetadataStatement(db).bind(
-      MONITOR_RUNTIME_SNAPSHOT_KEY,
-    ).first<RuntimeSnapshotMetadataRow>();
+    const metadata = await readRuntimeSnapshotMetadataStatement(db)
+      .bind(MONITOR_RUNTIME_SNAPSHOT_KEY)
+      .first<RuntimeSnapshotMetadataRow>();
     if (!metadata) return null;
 
     const updatedAt = toSnapshotUpdatedAt(metadata);
@@ -460,10 +463,7 @@ async function readStoredMonitorRuntimeSnapshot(
       ),
     };
   } catch (err) {
-    if (
-      err instanceof Error &&
-      err.message.startsWith('No fake D1 first() handler matched SQL:')
-    ) {
+    if (err instanceof Error && err.message.startsWith('No fake D1 first() handler matched SQL:')) {
       return null;
     }
     console.warn('monitor runtime: read failed', err);
@@ -594,7 +594,9 @@ function createRuntimeEntryForUpdate(
   dayStart: number,
 ): PublicMonitorRuntimeEntry {
   const createdToday =
-    Number.isFinite(update.created_at) && update.created_at >= dayStart && update.created_at <= update.checked_at;
+    Number.isFinite(update.created_at) &&
+    update.created_at >= dayStart &&
+    update.created_at <= update.checked_at;
 
   return {
     monitor_id: update.monitor_id,
@@ -610,7 +612,7 @@ function createRuntimeEntryForUpdate(
     unknown_sec: 0,
     uptime_sec: 0,
     heartbeat_gap_sec: '',
-    heartbeat_latency_ms: [isFiniteNumber(update.latency_ms) ? Math.round(update.latency_ms) : null],
+    heartbeat_latency_ms: [normalizeRuntimeUpdateLatencyMs(update.latency_ms)],
     heartbeat_status_codes: toRuntimeStatusCode(update.check_status),
   };
 }
@@ -679,9 +681,7 @@ export function applyMonitorRuntimeUpdates(
     existing.last_status_code = toRuntimeCurrentStatusCode(update);
     existing.last_outage_open = update.next_status === 'down';
 
-    existing.heartbeat_latency_ms.unshift(
-      isFiniteNumber(update.latency_ms) ? Math.round(update.latency_ms) : null,
-    );
+    existing.heartbeat_latency_ms.unshift(normalizeRuntimeUpdateLatencyMs(update.latency_ms));
     existing.heartbeat_status_codes = `${toRuntimeStatusCode(update.check_status)}${existing.heartbeat_status_codes}`;
     const gaps = parseHeartbeatGapSec(existing.heartbeat_gap_sec);
     if (typeof previousLastCheckedAt === 'number' && Number.isInteger(previousLastCheckedAt)) {
@@ -751,10 +751,7 @@ export function runtimeEntryToHeartbeats(
   entry: PublicMonitorRuntimeEntry,
 ): MonitorRuntimeHeartbeat[] {
   const heartbeats: MonitorRuntimeHeartbeat[] = [];
-  const count = Math.min(
-    entry.heartbeat_latency_ms.length,
-    entry.heartbeat_status_codes.length,
-  );
+  const count = Math.min(entry.heartbeat_latency_ms.length, entry.heartbeat_status_codes.length);
   if (count === 0 || entry.last_checked_at === null) {
     return heartbeats;
   }
@@ -798,9 +795,10 @@ export async function refreshPublicMonitorRuntimeSnapshot(opts: {
   }
 
   const snapshot = stored.snapshot;
+  const snapshotMonitorIds = new Set(snapshot.monitors.map((entry) => entry.monitor_id));
   const missingHistoricalEntry = opts.updates.some(
     (update) =>
-      !snapshot.monitors.some((entry) => entry.monitor_id === update.monitor_id) &&
+      !snapshotMonitorIds.has(update.monitor_id) &&
       update.created_at < dayStart &&
       update.checked_at > dayStart + update.interval_sec,
   );

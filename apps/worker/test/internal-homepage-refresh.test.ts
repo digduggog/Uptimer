@@ -19,10 +19,7 @@ import {
   tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates,
 } from '../src/public/homepage';
 import { acquireLease } from '../src/scheduler/lock';
-import {
-  toHomepageSnapshotPayload,
-  writeHomepageSnapshot,
-} from '../src/snapshots/public-homepage';
+import { toHomepageSnapshotPayload, writeHomepageSnapshot } from '../src/snapshots/public-homepage';
 import { createFakeD1Database } from './helpers/fake-d1';
 
 function createBaseSnapshot(now: number) {
@@ -184,9 +181,11 @@ describe('internal homepage refresh route', () => {
     expect(res.status).toBe(200);
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledTimes(1);
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
-    expect(toHomepageSnapshotPayload).not.toHaveBeenCalled();
+    expect(toHomepageSnapshotPayload).toHaveBeenCalledWith(fastPayload);
     expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
-    expect(vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates)).toHaveBeenCalledWith({
+    expect(
+      vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates),
+    ).toHaveBeenCalledWith({
       db: env.DB,
       now,
       baseSnapshot,
@@ -200,6 +199,67 @@ describe('internal homepage refresh route', () => {
           check_status: 'up',
           next_status: 'up',
           latency_ms: 55,
+        },
+      ],
+    });
+  });
+
+  it('normalizes privileged runtime update latency values before fast-path compute', async () => {
+    const now = 1_776_230_340;
+    vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
+    const env = createEnv(now);
+    const baseSnapshot = createBaseSnapshot(now);
+    vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).mockResolvedValue(
+      null as never,
+    );
+    vi.mocked(computePublicHomepagePayload).mockResolvedValue({
+      ...baseSnapshot,
+      generated_at: now,
+    } as never);
+
+    const res = await worker.fetch(
+      new Request('https://status.example.com/api/v1/internal/refresh/homepage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'X-Uptimer-Refresh-Source': 'scheduled',
+        },
+        body: JSON.stringify({
+          token: 'test-admin-token',
+          runtime_updates: [
+            {
+              monitor_id: 1,
+              interval_sec: 60,
+              created_at: now - 300,
+              checked_at: now,
+              check_status: 'up',
+              next_status: 'up',
+              latency_ms: -3.7,
+            },
+          ],
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      vi.mocked(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates),
+    ).toHaveBeenCalledWith({
+      db: env.DB,
+      now,
+      baseSnapshot,
+      baseSnapshotBodyJson: null,
+      updates: [
+        {
+          monitor_id: 1,
+          interval_sec: 60,
+          created_at: now - 300,
+          checked_at: now,
+          check_status: 'up',
+          next_status: 'up',
+          latency_ms: 0,
         },
       ],
     });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { Env } from './env';
 import type { Trace } from './observability/trace';
+import { monitorRuntimeUpdateSchema, type MonitorRuntimeUpdate } from './public/monitor-runtime';
 import type { CompletedDueMonitor } from './scheduler/scheduled';
 
 const HOMEPAGE_REFRESH_LOCK_NAME = 'snapshot:homepage:refresh';
@@ -33,19 +34,7 @@ function buildInternalRefreshResponse(ok: boolean, refreshed: boolean): Response
 
 const internalRefreshJsonBodySchema = z.object({
   token: z.string(),
-  runtime_updates: z
-    .array(
-      z.object({
-        monitor_id: z.number().int().positive(),
-        interval_sec: z.number().int().positive(),
-        created_at: z.number().int().nonnegative(),
-        checked_at: z.number().int().nonnegative(),
-        check_status: z.string().nullable(),
-        next_status: z.string().nullable(),
-        latency_ms: z.number().nullable(),
-      }),
-    )
-    .optional(),
+  runtime_updates: z.array(monitorRuntimeUpdateSchema).optional(),
 });
 
 const internalScheduledCheckBatchJsonBodySchema = z.object({
@@ -91,17 +80,7 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
   }
 
   let token = '';
-  let runtimeUpdates:
-    | Array<{
-        monitor_id: number;
-        interval_sec: number;
-        created_at: number;
-        checked_at: number;
-        check_status: string | null;
-        next_status: string | null;
-        latency_ms: number | null;
-      }>
-    | undefined;
+  let runtimeUpdates: MonitorRuntimeUpdate[] | undefined;
   const contentType = request.headers.get('Content-Type') ?? '';
 
   if (contentType.includes('application/json')) {
@@ -144,10 +123,7 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
   }
 
   try {
-    const {
-      readHomepageRefreshBaseSnapshot,
-      readHomepageSnapshotGeneratedAt,
-    } = trace
+    const { readHomepageRefreshBaseSnapshot, readHomepageSnapshotGeneratedAt } = trace
       ? await trace.timeAsync(
           'import_homepage_snapshot_read_module',
           async () => await import('./snapshots/public-homepage-read'),
@@ -174,41 +150,39 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
       }
     }
 
-    if (!skipInitialFreshnessCheck) {
-      const { acquireLease } = trace
-        ? await trace.timeAsync(
-            'import_scheduler_lock_module',
-            async () => await import('./scheduler/lock'),
-          )
-        : await import('./scheduler/lock');
-      const acquired = trace
-        ? await trace.timeAsync(
-            'homepage_refresh_lease',
-            async () =>
-              await acquireLease(
-                env.DB,
-                HOMEPAGE_REFRESH_LOCK_NAME,
-                now,
-                HOMEPAGE_REFRESH_LOCK_LEASE_SECONDS,
-              ),
-          )
-        : await acquireLease(
-            env.DB,
-            HOMEPAGE_REFRESH_LOCK_NAME,
-            now,
-            HOMEPAGE_REFRESH_LOCK_LEASE_SECONDS,
-          );
-      if (!acquired) {
-        if (trace?.enabled) {
-          trace.setLabel('skip', 'lease');
-        }
-        return finalizeInternalRefreshResponse(
-          buildInternalRefreshResponse(true, false),
-          trace,
-          traceMod,
-          { refreshed: false },
+    const { acquireLease } = trace
+      ? await trace.timeAsync(
+          'import_scheduler_lock_module',
+          async () => await import('./scheduler/lock'),
+        )
+      : await import('./scheduler/lock');
+    const acquired = trace
+      ? await trace.timeAsync(
+          'homepage_refresh_lease',
+          async () =>
+            await acquireLease(
+              env.DB,
+              HOMEPAGE_REFRESH_LOCK_NAME,
+              now,
+              HOMEPAGE_REFRESH_LOCK_LEASE_SECONDS,
+            ),
+        )
+      : await acquireLease(
+          env.DB,
+          HOMEPAGE_REFRESH_LOCK_NAME,
+          now,
+          HOMEPAGE_REFRESH_LOCK_LEASE_SECONDS,
         );
+    if (!acquired) {
+      if (trace?.enabled) {
+        trace.setLabel('skip', 'lease');
       }
+      return finalizeInternalRefreshResponse(
+        buildInternalRefreshResponse(true, false),
+        trace,
+        traceMod,
+        { refreshed: false },
+      );
     }
 
     const baseSnapshot = trace
@@ -240,7 +214,7 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           )
         : import('./snapshots/public-homepage'),
     ]);
-    const fastComputed =
+    let payload =
       skipInitialFreshnessCheck && baseSnapshot.snapshot
         ? trace
           ? await trace.timeAsync(
@@ -263,11 +237,16 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
               updates: runtimeUpdates ?? [],
             })
         : null;
-    if (trace?.enabled && fastComputed) {
+    if (trace?.enabled && payload) {
       trace.setLabel('fast_path', 'scheduled_runtime');
     }
-    let payload = fastComputed;
-    if (payload === null) {
+    if (payload !== null) {
+      payload = trace
+        ? trace.time('homepage_refresh_fast_validate', () =>
+            snapshotMod.toHomepageSnapshotPayload(payload),
+          )
+        : snapshotMod.toHomepageSnapshotPayload(payload);
+    } else {
       const computed = trace
         ? await trace.timeAsync(
             'homepage_refresh_compute',
