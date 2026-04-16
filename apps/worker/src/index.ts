@@ -292,9 +292,6 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           });
       payload = computed;
     }
-    const validatedPayload = trace
-      ? trace.time('homepage_refresh_validate', () => snapshotMod.toHomepageSnapshotPayload(payload))
-      : snapshotMod.toHomepageSnapshotPayload(payload);
     if (trace) {
       await trace.timeAsync(
         'homepage_refresh_write',
@@ -302,7 +299,7 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           await snapshotMod.writeHomepageSnapshot(
             env.DB,
             now,
-            validatedPayload,
+            payload,
             trace,
             baseSnapshot.seedDataSnapshot,
           ),
@@ -311,7 +308,7 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
       await snapshotMod.writeHomepageSnapshot(
         env.DB,
         now,
-        validatedPayload,
+        payload,
         undefined,
         baseSnapshot.seedDataSnapshot,
       );

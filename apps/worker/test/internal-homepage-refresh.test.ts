@@ -160,7 +160,7 @@ describe('internal homepage refresh route', () => {
     expect(res.status).toBe(200);
     expect(tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates).toHaveBeenCalledTimes(1);
     expect(computePublicHomepagePayload).not.toHaveBeenCalled();
-    expect(toHomepageSnapshotPayload).toHaveBeenCalledWith(fastPayload);
+    expect(toHomepageSnapshotPayload).not.toHaveBeenCalled();
     expect(writeHomepageSnapshot).toHaveBeenCalledWith(env.DB, now, fastPayload, undefined, false);
     expect(releaseLease).toHaveBeenCalledWith(env.DB, 'snapshot:homepage:refresh', now + 55);
     expect(
@@ -283,7 +283,7 @@ describe('internal homepage refresh route', () => {
       baseSnapshot,
       baseSnapshotBodyJson: null,
     });
-    expect(toHomepageSnapshotPayload).toHaveBeenCalledWith(computedPayload);
+    expect(toHomepageSnapshotPayload).not.toHaveBeenCalled();
     expect(writeHomepageSnapshot).toHaveBeenCalledWith(
       env.DB,
       now,
