@@ -363,8 +363,11 @@ async function handleInternalHomepageRefresh(request: Request, env: Env): Promis
           )
         : import('./snapshots/public-homepage'),
       trace
-        ? trace.timeAsync('import_status_module', async () => await import('./public/status'))
-        : import('./public/status'),
+        ? trace.timeAsync(
+            'import_status_refresh_module',
+            async () => await import('./public/status-refresh'),
+          )
+        : import('./public/status-refresh'),
       trace
         ? trace.timeAsync(
             'import_status_snapshot_module',

@@ -8,7 +8,7 @@ vi.mock('../src/public/homepage', () => ({
   computePublicHomepagePayload: vi.fn(),
   tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates: vi.fn(),
 }));
-vi.mock('../src/public/status', () => ({
+vi.mock('../src/public/status-refresh', () => ({
   tryComputePublicStatusPayloadFromScheduledRuntimeUpdates: vi.fn(),
 }));
 vi.mock('../src/snapshots/public-homepage', () => ({
@@ -25,7 +25,7 @@ import {
   computePublicHomepagePayload,
   tryComputePublicHomepagePayloadFromScheduledRuntimeUpdates,
 } from '../src/public/homepage';
-import { tryComputePublicStatusPayloadFromScheduledRuntimeUpdates } from '../src/public/status';
+import { tryComputePublicStatusPayloadFromScheduledRuntimeUpdates } from '../src/public/status-refresh';
 import { acquireLease, releaseLease } from '../src/scheduler/lock';
 import { toHomepageSnapshotPayload, writeHomepageSnapshot } from '../src/snapshots/public-homepage';
 import { writeStatusSnapshot } from '../src/snapshots/public-status';
