@@ -557,12 +557,13 @@ export default {
   },
   scheduled: async (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     if (controller.cron === '0 0 * * *') {
-      const [{ runRetention }, { runDailyRollup }] = await Promise.all([
-        import('./scheduler/retention'),
-        import('./scheduler/daily-rollup'),
-      ]);
-      await runRetention(env, controller);
+      const { runDailyRollup } = await import('./scheduler/daily-rollup');
       await runDailyRollup(env, controller, ctx);
+      return;
+    }
+    if (controller.cron === '30 0 * * *') {
+      const { runRetention } = await import('./scheduler/retention');
+      await runRetention(env, controller);
       return;
     }
 
