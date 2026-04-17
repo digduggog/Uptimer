@@ -17,7 +17,10 @@ import {
   materializeMonitorRuntimeTotals,
   MONITOR_RUNTIME_MAX_AGE_SECONDS,
   MONITOR_RUNTIME_SNAPSHOT_KEY,
-  parsePublicMonitorRuntimeTotalsEntryJson,
+  parsePublicMonitorRuntimeEntryJson,
+  readPublicMonitorRuntimeSnapshot,
+  snapshotHasMonitorIds,
+  toMonitorRuntimeEntryMap,
 } from '../public/monitor-runtime';
 import {
   buildNumberedPlaceholders,
@@ -492,68 +495,6 @@ function addUptimeTotals(
   target.downtime_sec += source.downtime_sec;
   target.unknown_sec += source.unknown_sec;
   target.uptime_sec += source.uptime_sec;
-}
-
-async function readRuntimeTotalsEntriesByMonitorId(opts: {
-  db: D1Database;
-  monitorIds: number[];
-  now: number;
-}): Promise<Map<number, Parameters<typeof materializeMonitorRuntimeTotals>[0]> | null> {
-  if (opts.monitorIds.length === 0) {
-    return new Map<number, Parameters<typeof materializeMonitorRuntimeTotals>[0]>();
-  }
-
-  const placeholders = buildNumberedPlaceholders(opts.monitorIds.length, 2);
-  const { results } = await preparePublicUiStatement(
-    opts.db,
-    `
-      SELECT
-        generated_at,
-        CAST(json_extract(body_json, '$.day_start_at') AS INTEGER) AS day_start_at,
-        CAST(json_extract(entry.value, '$.monitor_id') AS INTEGER) AS monitor_id,
-        entry.value AS monitor_json
-      FROM public_snapshots
-      JOIN json_each(public_snapshots.body_json, '$.monitors') AS entry
-      WHERE key = ?1
-        AND CAST(json_extract(entry.value, '$.monitor_id') AS INTEGER) IN (${placeholders})
-      ORDER BY monitor_id
-    `,
-  )
-    .bind(MONITOR_RUNTIME_SNAPSHOT_KEY, ...opts.monitorIds)
-    .all<{
-      generated_at: number;
-      day_start_at: number | null;
-      monitor_id: number | null;
-      monitor_json: string | null;
-    }>();
-
-  const rows = results ?? [];
-  if (rows.length !== opts.monitorIds.length) {
-    return null;
-  }
-
-  const dayStart = utcDayStart(opts.now);
-  const entriesByMonitorId = new Map<number, Parameters<typeof materializeMonitorRuntimeTotals>[0]>();
-  for (const row of rows) {
-    if (
-      typeof row.generated_at !== 'number' ||
-      Math.max(0, opts.now - row.generated_at) > MONITOR_RUNTIME_MAX_AGE_SECONDS ||
-      row.day_start_at !== dayStart ||
-      typeof row.monitor_id !== 'number' ||
-      typeof row.monitor_json !== 'string'
-    ) {
-      return null;
-    }
-
-    const entry = parsePublicMonitorRuntimeTotalsEntryJson(row.monitor_json);
-    if (!entry || entry.monitor_id !== row.monitor_id) {
-      return null;
-    }
-
-    entriesByMonitorId.set(row.monitor_id, entry);
-  }
-
-  return entriesByMonitorId.size === opts.monitorIds.length ? entriesByMonitorId : null;
 }
 
 async function computePartialUptimeTotalsSql(
@@ -1483,23 +1424,19 @@ publicUiRoutes.get('/analytics/uptime', async (c) => {
 
   const monitors = monitorRows ?? [];
   const monitorIds = monitors.map((monitor) => monitor.id);
-  const runtimeByMonitorId =
+  const runtimeSnapshot =
     monitorIds.length > 0
       ? await trace.timeAsync(
           'runtime_snapshot',
-          async () =>
-            await readRuntimeTotalsEntriesByMonitorId({
-              db: c.env.DB,
-              monitorIds,
-              now: rangeEnd,
-            }),
+          async () => await readPublicMonitorRuntimeSnapshot(c.env.DB, rangeEnd),
         )
-      : new Map<number, Parameters<typeof materializeMonitorRuntimeTotals>[0]>();
-  if (monitorIds.length > 0 && runtimeByMonitorId === null) {
+      : null;
+  if (monitorIds.length > 0 && (!runtimeSnapshot || !snapshotHasMonitorIds(runtimeSnapshot, monitorIds))) {
     const { publicRoutes } = await import('./public');
     return publicRoutes.fetch(c.req.raw, c.env, c.executionCtx);
   }
 
+  const runtimeByMonitorId = runtimeSnapshot ? toMonitorRuntimeEntryMap(runtimeSnapshot) : null;
   let total_sec = 0;
   let downtime_sec = 0;
   let unknown_sec = 0;
@@ -2139,7 +2076,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
       Math.max(0, rangeEnd - runtimeEntryRow.generated_at) <= MONITOR_RUNTIME_MAX_AGE_SECONDS &&
       runtimeEntryRow.day_start_at === utcDayStart(rangeEnd) &&
       typeof runtimeEntryRow.monitor_json === 'string'
-        ? parsePublicMonitorRuntimeTotalsEntryJson(runtimeEntryRow.monitor_json)
+        ? parsePublicMonitorRuntimeEntryJson(runtimeEntryRow.monitor_json)
         : null;
 
     if (runtimeEntry) {

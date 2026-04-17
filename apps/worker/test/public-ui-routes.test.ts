@@ -136,31 +136,6 @@ describe('public ui routes', () => {
         ],
       },
       {
-        match: (sql) =>
-          sql.includes("join json_each(public_snapshots.body_json, '$.monitors') as entry") &&
-          sql.includes('entry.value as monitor_json'),
-        all: () => [
-          {
-            generated_at: rangeEnd,
-            day_start_at: dayStart,
-            monitor_id: 21,
-            monitor_json: JSON.stringify({
-              monitor_id: 21,
-              interval_sec: 60,
-              range_start_at: dayStart,
-              materialized_at: rangeEnd,
-              last_checked_at: rangeEnd,
-              last_status_code: 'u',
-              last_outage_open: false,
-              total_sec: 3_600,
-              downtime_sec: 300,
-              unknown_sec: 0,
-              uptime_sec: 3_300,
-            }),
-          },
-        ],
-      },
-      {
         match: (sql) => sql.includes('from public_snapshots') && sql.includes("where key = ?1"),
         first: () => ({
           generated_at: rangeEnd,

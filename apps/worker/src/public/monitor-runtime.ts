@@ -40,21 +40,6 @@ export type PublicMonitorRuntimeEntry = {
   heartbeat_status_codes: string;
 };
 
-export type PublicMonitorRuntimeTotalsEntry = Pick<
-  PublicMonitorRuntimeEntry,
-  | 'monitor_id'
-  | 'interval_sec'
-  | 'range_start_at'
-  | 'materialized_at'
-  | 'last_checked_at'
-  | 'last_status_code'
-  | 'last_outage_open'
-  | 'total_sec'
-  | 'downtime_sec'
-  | 'unknown_sec'
-  | 'uptime_sec'
->;
-
 export type PublicMonitorRuntimeSnapshot = {
   version: 1;
   generated_at: number;
@@ -387,30 +372,8 @@ export function parsePublicMonitorRuntimeEntry(value: unknown): PublicMonitorRun
   return parsed.success ? parsed.data : null;
 }
 
-const runtimeTotalsEntrySchema = z.object({
-  monitor_id: z.number().int().positive(),
-  interval_sec: z.number().int().positive(),
-  range_start_at: z.number().int().nonnegative().nullable(),
-  materialized_at: z.number().int().nonnegative(),
-  last_checked_at: z.number().int().nonnegative().nullable(),
-  last_status_code: z.enum(['u', 'd', 'm', 'p', 'x']),
-  last_outage_open: z.boolean(),
-  total_sec: z.number().int().nonnegative(),
-  downtime_sec: z.number().int().nonnegative(),
-  unknown_sec: z.number().int().nonnegative(),
-  uptime_sec: z.number().int().nonnegative(),
-});
-
-export function parsePublicMonitorRuntimeTotalsEntry(
-  value: unknown,
-): PublicMonitorRuntimeTotalsEntry | null {
-  const parsed = runtimeTotalsEntrySchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
 const MAX_CACHED_RUNTIME_ENTRY_JSON_TEXTS = 512;
 const runtimeEntryByJsonText = new Map<string, PublicMonitorRuntimeEntry | null>();
-const runtimeTotalsEntryByJsonText = new Map<string, PublicMonitorRuntimeTotalsEntry | null>();
 
 function writeCachedRuntimeEntryByJsonText(
   jsonText: string,
@@ -420,17 +383,6 @@ function writeCachedRuntimeEntryByJsonText(
     runtimeEntryByJsonText.clear();
   }
   runtimeEntryByJsonText.set(jsonText, entry);
-  return entry;
-}
-
-function writeCachedRuntimeTotalsEntryByJsonText(
-  jsonText: string,
-  entry: PublicMonitorRuntimeTotalsEntry | null,
-): PublicMonitorRuntimeTotalsEntry | null {
-  if (runtimeTotalsEntryByJsonText.size >= MAX_CACHED_RUNTIME_ENTRY_JSON_TEXTS) {
-    runtimeTotalsEntryByJsonText.clear();
-  }
-  runtimeTotalsEntryByJsonText.set(jsonText, entry);
   return entry;
 }
 
@@ -457,32 +409,6 @@ export function parsePublicMonitorRuntimeEntryJson(
     );
   } catch {
     return writeCachedRuntimeEntryByJsonText(trimmed, null);
-  }
-}
-
-export function parsePublicMonitorRuntimeTotalsEntryJson(
-  jsonText: string | null | undefined,
-): PublicMonitorRuntimeTotalsEntry | null {
-  if (typeof jsonText !== 'string') {
-    return null;
-  }
-
-  const trimmed = jsonText.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (runtimeTotalsEntryByJsonText.has(trimmed)) {
-    return runtimeTotalsEntryByJsonText.get(trimmed) ?? null;
-  }
-
-  try {
-    return writeCachedRuntimeTotalsEntryByJsonText(
-      trimmed,
-      parsePublicMonitorRuntimeTotalsEntry(JSON.parse(trimmed) as unknown),
-    );
-  } catch {
-    return writeCachedRuntimeTotalsEntryByJsonText(trimmed, null);
   }
 }
 
@@ -1009,7 +935,7 @@ export function applyMonitorRuntimeUpdates(
 }
 
 export function materializeMonitorRuntimeTotals(
-  entry: PublicMonitorRuntimeTotalsEntry,
+  entry: PublicMonitorRuntimeEntry,
   now: number,
 ): MonitorRuntimeTotals {
   const total_sec = clampNonNegativeInteger(entry.total_sec);
