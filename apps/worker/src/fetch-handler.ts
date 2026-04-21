@@ -418,6 +418,11 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
       const res = await handlePublicStatus(request, env, ctx);
       return applyCorsHeaders(res, origin);
     }
+    if (hotPathname === '/api/v1/public/analytics/uptime') {
+      const { publicUiAnalyticsRoutes } = await import('./routes/public-ui-analytics');
+      const res = await publicUiAnalyticsRoutes.fetch(rewritePublicRequest(request), env, ctx);
+      return applyCorsHeaders(res, origin);
+    }
     if (request.method === 'GET' && isPublicUiPath(url)) {
       const { publicUiRoutes } = await import('./routes/public-ui');
       const res = await publicUiRoutes.fetch(rewritePublicRequest(request), env, ctx);
