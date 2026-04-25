@@ -318,15 +318,28 @@ async function runScheduledCheckBatchViaService(
     throw new Error('ADMIN_TOKEN missing');
   }
 
+  const traceScheduledRefresh = shouldTraceScheduledRefresh(env);
+  const traceId = traceScheduledRefresh ? crypto.randomUUID() : null;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${env.ADMIN_TOKEN}`,
+    'X-Uptimer-Internal-Format': INTERNAL_PROTOCOL_FORMAT,
+    'Content-Type': 'application/json; charset=utf-8',
+  };
+  if (traceScheduledRefresh) {
+    headers['X-Uptimer-Trace'] = '1';
+    headers['X-Uptimer-Trace-Id'] = traceId ?? crypto.randomUUID();
+    headers['X-Uptimer-Trace-Mode'] = 'scheduled';
+    const traceToken = readScheduledTraceToken(env);
+    if (traceToken) {
+      headers['X-Uptimer-Trace-Token'] = traceToken;
+    }
+  }
+
   const res = await fetchSelfWithTimeout(
     env,
     new Request('http://internal/api/v1/internal/scheduled/check-batch', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.ADMIN_TOKEN}`,
-        'X-Uptimer-Internal-Format': INTERNAL_PROTOCOL_FORMAT,
-        'Content-Type': 'application/json; charset=utf-8',
-      },
+      headers,
       body: JSON.stringify({
         token: env.ADMIN_TOKEN,
         ids: context.ids,
@@ -341,6 +354,11 @@ async function runScheduledCheckBatchViaService(
     'scheduled check batch service',
     signal,
   );
+  if (traceScheduledRefresh) {
+    console.log(
+      `scheduled: check_batch_trace request_trace_id=${traceId ?? '-'} checked_at=${context.checkedAt} ids=${context.ids.length} response_trace_id=${res.headers.get('X-Uptimer-Trace-Id') ?? '-'} response_trace=${res.headers.get('X-Uptimer-Trace') ?? '-'} server_timing=${res.headers.get('Server-Timing') ?? '-'}`,
+    );
+  }
 
   const bodyText = await res.text().catch(() => '');
   if (!res.ok) {

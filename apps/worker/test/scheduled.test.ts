@@ -595,6 +595,88 @@ describe('scheduler/scheduled regression', () => {
     });
   });
 
+  it('passes scheduler trace headers to internal check batch services', async () => {
+    const checkedAt = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
+    const dueRows = Array.from({ length: 7 }, (_, index) => ({
+      id: index + 1,
+      name: `API ${index + 1}`,
+      type: 'http',
+      target: `https://example.com/${index + 1}`,
+      interval_sec: 60,
+      created_at: 1_760_000_000 + index,
+      timeout_ms: 10_000,
+      http_method: 'GET',
+      http_headers_json: null,
+      http_body: null,
+      expected_status_json: null,
+      response_keyword: null,
+      response_keyword_mode: null,
+      response_forbidden_keyword: null,
+      response_forbidden_keyword_mode: null,
+      state_status: 'up',
+      state_last_error: null,
+      last_checked_at: checkedAt - 60,
+      last_changed_at: 1_760_000_000,
+      consecutive_failures: 0,
+      consecutive_successes: 1,
+    }));
+    const env = createEnv({ dueRows }) as unknown as Env;
+    env.ADMIN_TOKEN = 'test-admin-token';
+    env.UPTIMER_TRACE_TOKEN = 'trace-token';
+    env.UPTIMER_TRACE_SCHEDULED_REFRESH = '1';
+    const selfFetch = vi.fn(async (req: Request) => {
+      const pathname = new URL(req.url).pathname;
+      if (pathname === '/api/v1/internal/scheduled/check-batch') {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            runtime_updates: [],
+            processed_count: 0,
+            rejected_count: 0,
+            attempt_total: 0,
+            http_count: 0,
+            tcp_count: 0,
+            assertion_count: 0,
+            down_count: 0,
+            unknown_count: 0,
+            checks_duration_ms: 0,
+            persist_duration_ms: 0,
+          }),
+          {
+            status: 200,
+            headers: {
+              'X-Uptimer-Trace-Id': 'batch-child-trace-id',
+              'X-Uptimer-Trace': 'route=internal/scheduled-check-batch;ok=true',
+              'Server-Timing': 'w_check_batch_run;dur=1.00',
+            },
+          },
+        );
+      }
+      if (pathname === '/api/v1/internal/refresh/homepage') {
+        return new Response(JSON.stringify({ ok: true, refreshed: true }), { status: 200 });
+      }
+      throw new Error(`unexpected self fetch: ${pathname}`);
+    });
+    env.SELF = { fetch: selfFetch } as unknown as Fetcher;
+    const waitUntil = vi.fn();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    const batchReq = selfFetch.mock.calls
+      .map((call) => call[0] as Request)
+      .find((req) => new URL(req.url).pathname === '/api/v1/internal/scheduled/check-batch');
+    expect(batchReq?.headers.get('X-Uptimer-Trace')).toBe('1');
+    expect(batchReq?.headers.get('X-Uptimer-Trace-Mode')).toBe('scheduled');
+    expect(batchReq?.headers.get('X-Uptimer-Trace-Token')).toBe('trace-token');
+    expect(batchReq?.headers.get('X-Uptimer-Trace-Id')).toBeTruthy();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('scheduled: check_batch_trace'));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('response_trace_id=batch-child-trace-id'),
+    );
+  });
+
   it('falls back inline when a service batch returns invalid runtime updates', async () => {
     const checkedAt = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
     const dueRows = Array.from({ length: 7 }, (_, index) => ({

@@ -411,6 +411,33 @@ function finalizeInternalRefreshResponse(
   return res;
 }
 
+function finalizeInternalCheckBatchResponse(
+  res: Response,
+  trace: Trace | null,
+  traceMod: typeof import('./observability/trace') | null,
+  info: { ok?: boolean; error?: boolean },
+): Response {
+  if (!trace?.enabled || !traceMod) {
+    return res;
+  }
+
+  if (typeof info.ok === 'boolean') {
+    trace.setLabel('ok', info.ok);
+  }
+  if (info.error) {
+    trace.setLabel('error', '1');
+  }
+
+  trace.finish('total');
+  traceMod.applyTraceToResponse({ res, trace, prefix: 'w' });
+  console.log(
+    info.error
+      ? `internal-check-batch: id=${trace.id} failed=1 timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`
+      : `internal-check-batch: id=${trace.id} ok=${info.ok} timing=${trace.toServerTiming('w')} info=${trace.toInfoHeader()}`,
+  );
+  return res;
+}
+
 async function handleInternalHomepageRefresh(request: Request, env: Env): Promise<Response> {
   if (!isInternalServiceRequest(request)) {
     return buildNotFoundJsonResponse(request.headers.get('Origin'));
@@ -857,11 +884,31 @@ async function handleInternalScheduledCheckBatch(
     return new Response('Payload Too Large', { status: 413 });
   }
 
-  const parsedBody = parseInternalScheduledCheckBatchBody(await request.json().catch(() => null));
+  let traceMod: typeof import('./observability/trace') | null = null;
+  let trace: Trace | null = null;
+  if (normalizeTruthyHeader(request.headers.get('X-Uptimer-Trace'))) {
+    traceMod = await import('./observability/trace');
+    trace = new traceMod.Trace(
+      traceMod.resolveTraceOptions({
+        header: (name) => request.headers.get(name) ?? undefined,
+        env: env as unknown as Record<string, unknown>,
+      }),
+    );
+  }
+  trace?.setLabel('route', 'internal/scheduled-check-batch');
+
+  const rawBody = trace
+    ? await trace.timeAsync('check_batch_parse_body', async () => await request.json().catch(() => null))
+    : await request.json().catch(() => null);
+  const parsedBody = parseInternalScheduledCheckBatchBody(rawBody);
   if (!parsedBody) {
     return new Response('Forbidden', { status: 403 });
   }
   const now = Math.floor(Date.now() / 1000);
+  trace?.setLabel('now', now);
+  trace?.setLabel('checked_at', parsedBody.checked_at);
+  trace?.setLabel('ids', parsedBody.ids.length);
+  trace?.setLabel('allow_notifications', parsedBody.allow_notifications === true);
   const currentCheckedAt = Math.floor(now / 60) * 60;
   if (
     parsedBody.checked_at > currentCheckedAt ||
@@ -872,74 +919,95 @@ async function handleInternalScheduledCheckBatch(
 
   const ids = [...new Set(parsedBody.ids)];
   const suppressedMonitorIds = new Set(parsedBody.suppressed_monitor_ids ?? []);
-  const [{ runExclusivePersistedMonitorBatch }, notificationsModule] =
-    await Promise.all([
-      import('./scheduler/scheduled'),
-      parsedBody.allow_notifications === true
-        ? import('./scheduler/notifications')
-        : Promise.resolve(null),
-    ]);
+  const [{ runExclusivePersistedMonitorBatch }, notificationsModule] = await (trace
+    ? trace.timeAsync(
+        'check_batch_import_modules',
+        async () =>
+          await Promise.all([
+            import('./scheduler/scheduled'),
+            parsedBody.allow_notifications === true
+              ? import('./scheduler/notifications')
+              : Promise.resolve(null),
+          ]),
+      )
+    : Promise.all([
+        import('./scheduler/scheduled'),
+        parsedBody.allow_notifications === true
+          ? import('./scheduler/notifications')
+          : Promise.resolve(null),
+      ]));
 
   const notify = notificationsModule
-    ? await notificationsModule.createNotifyContext(env, ctx)
+    ? trace
+      ? await trace.timeAsync(
+          'check_batch_notify_context',
+          async () => await notificationsModule.createNotifyContext(env, ctx),
+        )
+      : await notificationsModule.createNotifyContext(env, ctx)
     : null;
   let result;
   try {
-    result = await runExclusivePersistedMonitorBatch({
-      db: env.DB,
-      ids,
-      checkedAt: parsedBody.checked_at,
-      abortSignal: request.signal,
-      suppressedMonitorIds,
-      stateMachineConfig: {
-        failuresToDownFromUp: parsedBody.state_failures_to_down_from_up,
-        successesToUpFromDown: parsedBody.state_successes_to_up_from_down,
-      },
-      ...(notificationsModule && notify
-        ? {
-            onPersistedMonitor: (completed: CompletedDueMonitor) =>
-              notificationsModule.queueMonitorNotification(env, notify, completed),
-          }
-        : {}),
-    });
+    const runBatch = async () =>
+      await runExclusivePersistedMonitorBatch({
+        db: env.DB,
+        ids,
+        checkedAt: parsedBody.checked_at,
+        abortSignal: request.signal,
+        suppressedMonitorIds,
+        stateMachineConfig: {
+          failuresToDownFromUp: parsedBody.state_failures_to_down_from_up,
+          successesToUpFromDown: parsedBody.state_successes_to_up_from_down,
+        },
+        ...(notificationsModule && notify
+          ? {
+              onPersistedMonitor: (completed: CompletedDueMonitor) =>
+                notificationsModule.queueMonitorNotification(env, notify, completed),
+            }
+          : {}),
+      });
+    result = trace ? await trace.timeAsync('check_batch_run', runBatch) : await runBatch();
   } catch (err) {
     if (err instanceof LeaseLostError) {
       console.warn(err.message);
-      return new Response('Service Unavailable', {
+      return finalizeInternalCheckBatchResponse(new Response('Service Unavailable', {
         status: 503,
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'no-store',
         },
-      });
+      }), trace, traceMod, { ok: false });
     }
     console.error('internal scheduled check batch failed', err);
-    return new Response('Internal Server Error', {
+    return finalizeInternalCheckBatchResponse(new Response('Internal Server Error', {
       status: 500,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-store',
       },
-    });
+    }), trace, traceMod, { ok: false, error: true });
   }
 
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      runtime_updates: wantsCompactInternalFormat(request)
-        ? encodeMonitorRuntimeUpdatesCompact(result.runtimeUpdates)
-        : result.runtimeUpdates,
-      processed_count: result.stats.processedCount,
-      rejected_count: result.stats.rejectedCount,
-      attempt_total: result.stats.attemptTotal,
-      http_count: result.stats.httpCount,
-      tcp_count: result.stats.tcpCount,
-      assertion_count: result.stats.assertionCount,
-      down_count: result.stats.downCount,
-      unknown_count: result.stats.unknownCount,
-      checks_duration_ms: result.checksDurMs,
-      persist_duration_ms: result.persistDurMs,
-    }),
+  const responsePayload = {
+    ok: true,
+    runtime_updates: wantsCompactInternalFormat(request)
+      ? encodeMonitorRuntimeUpdatesCompact(result.runtimeUpdates)
+      : result.runtimeUpdates,
+    processed_count: result.stats.processedCount,
+    rejected_count: result.stats.rejectedCount,
+    attempt_total: result.stats.attemptTotal,
+    http_count: result.stats.httpCount,
+    tcp_count: result.stats.tcpCount,
+    assertion_count: result.stats.assertionCount,
+    down_count: result.stats.downCount,
+    unknown_count: result.stats.unknownCount,
+    checks_duration_ms: result.checksDurMs,
+    persist_duration_ms: result.persistDurMs,
+  };
+  const bodyText = trace
+    ? trace.time('check_batch_stringify_response', () => JSON.stringify(responsePayload))
+    : JSON.stringify(responsePayload);
+  return finalizeInternalCheckBatchResponse(new Response(
+    bodyText,
     {
       status: 200,
       headers: {
@@ -947,7 +1015,7 @@ async function handleInternalScheduledCheckBatch(
         'Cache-Control': 'no-store',
       },
     },
-  );
+  ), trace, traceMod, { ok: true });
 }
 
 export default {

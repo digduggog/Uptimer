@@ -163,6 +163,65 @@ describe('internal scheduled check-batch route', () => {
     });
   });
 
+  it('emits trace headers and logs for scheduled check batches with a valid trace token', async () => {
+    const now = new Date('2026-04-15T05:18:20.000Z').valueOf();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.mocked(runExclusivePersistedMonitorBatch).mockResolvedValue({
+      runtimeUpdates: [],
+      stats: {
+        processedCount: 0,
+        rejectedCount: 0,
+        attemptTotal: 0,
+        httpCount: 0,
+        tcpCount: 0,
+        assertionCount: 0,
+        downCount: 0,
+        unknownCount: 0,
+      },
+      checksDurMs: 0,
+      persistDurMs: 0,
+    });
+
+    const env = {
+      DB: createFakeD1Database([]),
+      ADMIN_TOKEN: 'test-admin-token',
+      UPTIMER_TRACE_TOKEN: 'trace-token',
+    } as unknown as Env;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/scheduled/check-batch', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'application/json; charset=utf-8',
+          'X-Uptimer-Trace': '1',
+          'X-Uptimer-Trace-Id': 'batch-trace-id',
+          'X-Uptimer-Trace-Mode': 'scheduled',
+          'X-Uptimer-Trace-Token': 'trace-token',
+        },
+        body: JSON.stringify({
+          token: 'test-admin-token',
+          ids: [1, 2],
+          checked_at: 1_776_230_280,
+          state_failures_to_down_from_up: 2,
+          state_successes_to_up_from_down: 2,
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Uptimer-Trace-Id')).toBe('batch-trace-id');
+    expect(res.headers.get('X-Uptimer-Trace')).toContain(
+      'route=internal/scheduled-check-batch',
+    );
+    expect(res.headers.get('X-Uptimer-Trace')).toContain('ids=2');
+    expect(res.headers.get('Server-Timing')).toContain('w_check_batch_run');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('internal-check-batch:'));
+  });
+
   it('rejects non-internal hosts before method checks', async () => {
     const env = {
       DB: createFakeD1Database([]),
