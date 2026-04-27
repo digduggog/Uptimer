@@ -363,6 +363,62 @@ describe('scheduler/scheduled regression', () => {
     logSpy.mockRestore();
   });
 
+  it('passes the freshly written runtime snapshot baseline to the direct homepage core', async () => {
+    const env = createEnv({
+      dueRows: [
+        {
+          id: 1,
+          name: 'API',
+          type: 'http',
+          target: 'https://example.com',
+          interval_sec: 60,
+          created_at: 1_760_000_000,
+          timeout_ms: 10_000,
+          http_method: 'GET',
+          http_headers_json: null,
+          http_body: null,
+          expected_status_json: null,
+          response_keyword: null,
+          response_keyword_mode: null,
+          response_forbidden_keyword: null,
+          response_forbidden_keyword_mode: null,
+          state_status: 'up',
+          state_last_error: null,
+          last_checked_at: 1_760_000_060,
+          last_changed_at: 1_760_000_000,
+          consecutive_failures: 0,
+          consecutive_successes: 1,
+        },
+      ],
+    }) as unknown as Env;
+    env.UPTIMER_SCHEDULED_HOMEPAGE_DIRECT = '1';
+    const runtimeSnapshot = {
+      version: 1 as const,
+      generated_at: Math.floor(Date.now() / 1000),
+      day_start_at: Math.floor(Math.floor(Date.now() / 1000) / 86_400) * 86_400,
+      monitors: [],
+    };
+    vi.mocked(refreshPublicMonitorRuntimeSnapshot).mockResolvedValueOnce(runtimeSnapshot);
+    vi.mocked(runInternalHomepageRefreshCore).mockResolvedValueOnce({ ok: true, refreshed: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const waitUntil = vi.fn();
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    expect(refreshPublicMonitorRuntimeSnapshot).toHaveBeenCalledTimes(1);
+    expect(runInternalHomepageRefreshCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env,
+        scheduledRefreshRequest: true,
+        trace: null,
+        preferCachedBaseSnapshot: true,
+        scheduledRuntimeSnapshotBaseline: runtimeSnapshot,
+      }),
+    );
+    logSpy.mockRestore();
+  });
+
   it('emits scheduler trace headers and logs child refresh trace details when tracing is enabled', async () => {
     const env = createEnv({ dueRows: [] }) as unknown as Env;
     env.ADMIN_TOKEN = 'test-admin-token';

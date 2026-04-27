@@ -25,6 +25,7 @@ import {
   refreshPublicMonitorRuntimeSnapshot,
   writePublicMonitorRuntimeSnapshot,
   type MonitorRuntimeUpdate,
+  type PublicMonitorRuntimeSnapshot,
 } from '../public/monitor-runtime';
 import { readSettings } from '../settings';
 import { acquireLease, releaseLease } from './lock';
@@ -1318,7 +1319,10 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
   const claimedLeaseExpiresAt = now + LOCK_LEASE_SECONDS;
   const totalStart = performance.now();
   const currentNow = () => Math.floor(Date.now() / 1000);
-  const queueHomepageRefresh = (runtimeUpdates?: MonitorRuntimeUpdate[]) => {
+  const queueHomepageRefresh = (
+    runtimeUpdates?: MonitorRuntimeUpdate[],
+    runtimeSnapshotBaseline?: PublicMonitorRuntimeSnapshot,
+  ) => {
     if (shouldRefreshHomepageDirect(env)) {
       return runInternalHomepageRefreshCore({
         env,
@@ -1327,6 +1331,9 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
         ...(runtimeUpdates?.length ? { runtimeUpdates } : {}),
         trace: null,
         preferCachedBaseSnapshot: true,
+        ...(runtimeUpdates?.length && runtimeSnapshotBaseline
+          ? { scheduledRuntimeSnapshotBaseline: runtimeSnapshotBaseline }
+          : {}),
       })
         .then((result) => {
           console.log(
@@ -1428,6 +1435,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
     let batchWallDurMs = 0;
     let runtimeSnapshotDurMs = 0;
     let runtimeUpdates: MonitorRuntimeUpdate[] = [];
+    let runtimeSnapshotBaseline: PublicMonitorRuntimeSnapshot | undefined;
     let requiresRuntimeSnapshotRebuild = false;
     let requiresFullHomepageRefresh = false;
     const aggregateStats: MonitorBatchStats = {
@@ -1520,10 +1528,11 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       const runtimeSnapshotStart = performance.now();
       const rebuiltSnapshot = await rebuildPublicMonitorRuntimeSnapshot(env.DB, runtimeSnapshotNow);
       await writePublicMonitorRuntimeSnapshot(env.DB, rebuiltSnapshot, runtimeSnapshotNow);
+      runtimeSnapshotBaseline = rebuiltSnapshot;
       runtimeSnapshotDurMs = performance.now() - runtimeSnapshotStart;
     } else if (runtimeUpdates.length > 0) {
       const runtimeSnapshotStart = performance.now();
-      await refreshPublicMonitorRuntimeSnapshot({
+      runtimeSnapshotBaseline = await refreshPublicMonitorRuntimeSnapshot({
         db: env.DB,
         now: runtimeSnapshotNow,
         updates: runtimeUpdates,
@@ -1545,7 +1554,12 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       );
     }
 
-    ctx.waitUntil(queueHomepageRefresh(requiresFullHomepageRefresh ? undefined : runtimeUpdates));
+    ctx.waitUntil(
+      queueHomepageRefresh(
+        requiresFullHomepageRefresh ? undefined : runtimeUpdates,
+        requiresFullHomepageRefresh ? undefined : runtimeSnapshotBaseline,
+      ),
+    );
   } catch (err) {
     if (err instanceof LeaseLostError) {
       console.warn(err.message);

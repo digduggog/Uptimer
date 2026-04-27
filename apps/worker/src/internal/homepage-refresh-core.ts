@@ -3,9 +3,11 @@ import type { Trace } from '../observability/trace';
 import { LeaseLostError, startRenewableLease } from '../scheduler/lease-guard';
 import {
   fromRuntimeStatusCode,
+  MONITOR_RUNTIME_MAX_AGE_SECONDS,
   readPublicMonitorRuntimeSnapshot,
   toMonitorRuntimeEntryMap,
   type MonitorRuntimeUpdate,
+  type PublicMonitorRuntimeSnapshot,
 } from '../public/monitor-runtime';
 
 export const HOMEPAGE_REFRESH_LOCK_NAME = 'snapshot:homepage:refresh';
@@ -35,6 +37,7 @@ export type InternalHomepageRefreshCoreOptions = {
   runtimeUpdates?: MonitorRuntimeUpdate[];
   trace?: Trace | null;
   preferCachedBaseSnapshot?: boolean;
+  scheduledRuntimeSnapshotBaseline?: PublicMonitorRuntimeSnapshot;
 };
 
 export function normalizeInternalTruthy(value: string | null | undefined): boolean {
@@ -92,6 +95,26 @@ function readRuntimeUpdateHeartbeatStatus(
   return normalizeRuntimeUpdateStatus(update.check_status);
 }
 
+function utcDayStart(timestamp: number): number {
+  return Math.floor(timestamp / 86_400) * 86_400;
+}
+
+function isUsableScheduledRuntimeSnapshotBaseline(
+  snapshot: PublicMonitorRuntimeSnapshot | undefined,
+  now: number,
+): snapshot is PublicMonitorRuntimeSnapshot {
+  if (!snapshot) {
+    return false;
+  }
+  if (snapshot.generated_at > now + 60) {
+    return false;
+  }
+  if (Math.max(0, now - snapshot.generated_at) > MONITOR_RUNTIME_MAX_AGE_SECONDS) {
+    return false;
+  }
+  return snapshot.day_start_at === utcDayStart(now);
+}
+
 function buildNumberedPlaceholders(count: number, start = 1): string {
   return Array.from({ length: count }, (_, index) => `?${index + start}`).join(', ');
 }
@@ -143,12 +166,18 @@ export async function sanitizeScheduledRuntimeUpdatesForFastPath(opts: {
   now: number;
   updates: MonitorRuntimeUpdate[];
   trace?: Trace | null;
+  runtimeSnapshotBaseline?: PublicMonitorRuntimeSnapshot;
 }): Promise<MonitorRuntimeUpdate[]> {
   if (opts.updates.length === 0) {
     return opts.updates;
   }
 
-  const runtimeSnapshot = await readPublicMonitorRuntimeSnapshot(opts.db, opts.now);
+  const runtimeSnapshot = isUsableScheduledRuntimeSnapshotBaseline(
+    opts.runtimeSnapshotBaseline,
+    opts.now,
+  )
+    ? opts.runtimeSnapshotBaseline
+    : await readPublicMonitorRuntimeSnapshot(opts.db, opts.now);
   if (!runtimeSnapshot) {
     const persistedBaseline = await readPersistedRuntimeUpdateBaseline(opts.db, opts.updates);
     if (!persistedBaseline) {
@@ -253,6 +282,7 @@ export async function runInternalHomepageRefreshCore({
   runtimeUpdates,
   trace,
   preferCachedBaseSnapshot = false,
+  scheduledRuntimeSnapshotBaseline,
 }: InternalHomepageRefreshCoreOptions): Promise<InternalHomepageRefreshCoreResult> {
   const traceResidualDetails = shouldTraceHomepageResidualDetails(env, trace);
   const detailTrace: Trace | undefined = traceResidualDetails && trace ? trace : undefined;
@@ -274,6 +304,9 @@ export async function runInternalHomepageRefreshCore({
                 now,
                 updates: runtimeUpdates,
                 trace: trace ?? null,
+                ...(scheduledRuntimeSnapshotBaseline
+                  ? { runtimeSnapshotBaseline: scheduledRuntimeSnapshotBaseline }
+                  : {}),
               }),
           )
         : await sanitizeScheduledRuntimeUpdatesForFastPath({
@@ -281,6 +314,9 @@ export async function runInternalHomepageRefreshCore({
             now,
             updates: runtimeUpdates,
             trace: trace ?? null,
+            ...(scheduledRuntimeSnapshotBaseline
+              ? { runtimeSnapshotBaseline: scheduledRuntimeSnapshotBaseline }
+              : {}),
           })
       : (runtimeUpdates ?? []);
   if (trace?.enabled) {
