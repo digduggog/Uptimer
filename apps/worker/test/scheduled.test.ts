@@ -30,11 +30,19 @@ vi.mock('../src/public/monitor-runtime', async (importOriginal) => {
 vi.mock('../src/public/monitor-runtime-bootstrap', () => ({
   rebuildPublicMonitorRuntimeSnapshot: vi.fn(),
 }));
+vi.mock('../src/internal/homepage-refresh-core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/internal/homepage-refresh-core')>();
+  return {
+    ...actual,
+    runInternalHomepageRefreshCore: vi.fn(actual.runInternalHomepageRefreshCore),
+  };
+});
 vi.mock('../src/snapshots', () => ({
   refreshPublicHomepageSnapshotIfNeeded: vi.fn(),
 }));
 
 import type { Env } from '../src/env';
+import { runInternalHomepageRefreshCore } from '../src/internal/homepage-refresh-core';
 import { runHttpCheck } from '../src/monitor/http';
 import { runTcpCheck } from '../src/monitor/tcp';
 import { dispatchWebhookToChannels } from '../src/notify/webhook';
@@ -323,6 +331,35 @@ describe('scheduler/scheduled regression', () => {
     expect(req.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
     await expect(req.text()).resolves.toBe('test-admin-token');
     expect(refreshPublicHomepageSnapshotIfNeeded).not.toHaveBeenCalled();
+  });
+
+  it('uses the equivalent direct homepage refresh core when the direct gate is enabled', async () => {
+    const env = createEnv({ dueRows: [] }) as unknown as Env;
+    env.ADMIN_TOKEN = 'test-admin-token';
+    env.UPTIMER_SCHEDULED_HOMEPAGE_DIRECT = '1';
+    const selfFetch = vi.fn().mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    env.SELF = { fetch: selfFetch } as unknown as Fetcher;
+    vi.mocked(runInternalHomepageRefreshCore).mockResolvedValueOnce({ ok: true, refreshed: true });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const waitUntil = vi.fn();
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    expect(selfFetch).not.toHaveBeenCalled();
+    expect(refreshPublicHomepageSnapshotIfNeeded).not.toHaveBeenCalled();
+    expect(runInternalHomepageRefreshCore).toHaveBeenCalledWith({
+      env,
+      now: Math.floor(Date.now() / 1000),
+      scheduledRefreshRequest: true,
+      trace: null,
+    });
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('scheduled: homepage_refresh_direct route=internal/homepage-refresh mode=scheduled direct=1 ok=1 refreshed=1'),
+    );
+    logSpy.mockRestore();
   });
 
   it('emits scheduler trace headers and logs child refresh trace details when tracing is enabled', async () => {

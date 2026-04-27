@@ -14,6 +14,7 @@ export interface Env {
   UPTIMER_TRACE_TIMINGS?: string;
   UPTIMER_HOMEPAGE_RELEASE_LOCK?: string;
   UPTIMER_HOMEPAGE_WRITE_LEASE_CHECK?: string;
+  UPTIMER_SCHEDULED_HOMEPAGE_DIRECT?: string;
 
   // In-memory, per-instance rate limit for admin endpoints.
   // Keep optional so older deployments don't break.

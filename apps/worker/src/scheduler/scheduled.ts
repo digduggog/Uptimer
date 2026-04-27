@@ -8,6 +8,7 @@ import {
 import type { HttpResponseMatchMode, MonitorStatus } from '@uptimer/db/schema';
 
 import type { Env } from '../env';
+import { runInternalHomepageRefreshCore } from '../internal/homepage-refresh-core';
 import type { Trace } from '../observability/trace';
 import {
   computeNextState,
@@ -145,6 +146,11 @@ function shouldTraceScheduledRefresh(env: Env): boolean {
     readScheduledTraceToken(env) !== null &&
     isTruthyEnvFlag(rawEnv.UPTIMER_TRACE_SCHEDULED_REFRESH ?? rawEnv.TRACE_SCHEDULED_REFRESH)
   );
+}
+
+function shouldRefreshHomepageDirect(env: Env): boolean {
+  const rawEnv = env as unknown as Record<string, unknown>;
+  return isTruthyEnvFlag(rawEnv.UPTIMER_SCHEDULED_HOMEPAGE_DIRECT);
 }
 
 async function fetchSelfWithTimeout(
@@ -1312,8 +1318,26 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
   const claimedLeaseExpiresAt = now + LOCK_LEASE_SECONDS;
   const totalStart = performance.now();
   const currentNow = () => Math.floor(Date.now() / 1000);
-  const queueHomepageRefresh = (runtimeUpdates?: MonitorRuntimeUpdate[]) =>
-    env.SELF
+  const queueHomepageRefresh = (runtimeUpdates?: MonitorRuntimeUpdate[]) => {
+    if (shouldRefreshHomepageDirect(env)) {
+      return runInternalHomepageRefreshCore({
+        env,
+        now: currentNow(),
+        scheduledRefreshRequest: true,
+        ...(runtimeUpdates?.length ? { runtimeUpdates } : {}),
+        trace: null,
+      })
+        .then((result) => {
+          console.log(
+            `scheduled: homepage_refresh_direct route=internal/homepage-refresh mode=scheduled direct=1 ok=${result.ok ? 1 : 0} refreshed=${result.refreshed ? 1 : 0} runtime_updates=${runtimeUpdates?.length ?? 0} skip=${result.skip ?? '-'} error=${result.error ? 1 : 0}`,
+          );
+        })
+        .catch((err) => {
+          console.warn('homepage snapshot: direct refresh failed', err);
+        });
+    }
+
+    return env.SELF
       ? refreshHomepageSnapshotViaService(
           env,
           runtimeUpdates ? { runtimeUpdates } : undefined,
@@ -1335,6 +1359,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       : refreshHomepageSnapshotInline(env, currentNow()).catch((err) => {
           console.warn('homepage snapshot: refresh failed', err);
         });
+  };
 
   const acquired = await acquireLease(env.DB, LOCK_NAME, now, LOCK_LEASE_SECONDS);
   if (!acquired) {
