@@ -362,6 +362,48 @@ describe('scheduler/scheduled regression', () => {
     expect(refreshPublicHomepageSnapshotIfNeeded).not.toHaveBeenCalled();
   });
 
+  it('queues runtime-fragment refresh via service binding when enabled', async () => {
+    const env = createEnv({ dueRows: [] }) as unknown as Env;
+    env.ADMIN_TOKEN = 'test-admin-token';
+    env.UPTIMER_SCHEDULED_RUNTIME_FRAGMENT_REFRESH = '1';
+    const selfFetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/api/v1/internal/refresh/runtime-fragments') {
+        return new Response(
+          JSON.stringify({ ok: true, refreshed: true, update_count: 2 }),
+          { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, refreshed: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      });
+    });
+    env.SELF = { fetch: selfFetch } as unknown as Fetcher;
+    const waitUntil = vi.fn();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    const requests = selfFetch.mock.calls.map((call) => call[0] as Request);
+    expect(requests.map((request) => new URL(request.url).pathname).sort()).toEqual([
+      '/api/v1/internal/refresh/homepage',
+      '/api/v1/internal/refresh/runtime-fragments',
+    ]);
+    const runtimeRequest = requests.find(
+      (request) => new URL(request.url).pathname === '/api/v1/internal/refresh/runtime-fragments',
+    );
+    expect(runtimeRequest?.method).toBe('POST');
+    expect(runtimeRequest?.headers.get('Authorization')).toBe('Bearer test-admin-token');
+    expect(logSpy).toHaveBeenCalledWith(
+      'scheduled: runtime_fragments_refresh route=internal/refresh/runtime-fragments refreshed=1 update_count=2',
+    );
+    logSpy.mockRestore();
+  });
+
   it('uses the equivalent direct homepage refresh core when the direct gate is enabled', async () => {
     const env = createEnv({ dueRows: [] }) as unknown as Env;
     env.ADMIN_TOKEN = 'test-admin-token';

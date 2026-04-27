@@ -40,6 +40,7 @@ const INTERNAL_PROTOCOL_FORMAT = 'compact-v1';
 const INTERNAL_SCHEDULED_BATCH_SIZE = 6;
 const INTERNAL_SCHEDULED_BATCH_CONCURRENCY = 2;
 const HOMEPAGE_REFRESH_SERVICE_TIMEOUT_MS = 15_000;
+const RUNTIME_FRAGMENTS_REFRESH_SERVICE_TIMEOUT_MS = 15_000;
 const INTERNAL_SCHEDULED_CHECK_BATCH_TIMEOUT_MS = 30_000;
 const BATCH_EXECUTION_LOCK_PREFIX = 'scheduler:batch:';
 const MONITOR_EXECUTION_LOCK_PREFIX = 'scheduler:batch-monitor:';
@@ -154,6 +155,11 @@ function shouldRefreshHomepageDirect(env: Env): boolean {
   return isTruthyEnvFlag(rawEnv.UPTIMER_SCHEDULED_HOMEPAGE_DIRECT);
 }
 
+function shouldRefreshRuntimeFragmentsViaService(env: Env): boolean {
+  const rawEnv = env as unknown as Record<string, unknown>;
+  return isTruthyEnvFlag(rawEnv.UPTIMER_SCHEDULED_RUNTIME_FRAGMENT_REFRESH);
+}
+
 function readBoundedPositiveIntegerEnv(
   env: Env,
   key: string,
@@ -199,6 +205,46 @@ async function fetchSelfWithTimeout(
     signal?.removeEventListener('abort', abortFromParent);
     clearTimeout(timeout);
   }
+}
+
+async function refreshRuntimeFragmentsViaService(env: Env): Promise<void> {
+  if (!env.ADMIN_TOKEN) {
+    throw new Error('ADMIN_TOKEN missing');
+  }
+
+  const res = await fetchSelfWithTimeout(
+    env,
+    new Request('http://internal/api/v1/internal/refresh/runtime-fragments', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.ADMIN_TOKEN}`,
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+      body: env.ADMIN_TOKEN,
+    }),
+    RUNTIME_FRAGMENTS_REFRESH_SERVICE_TIMEOUT_MS,
+    'runtime fragments refresh service',
+  );
+  const bodyText = await res.text().catch(() => '');
+  if (!res.ok) {
+    throw new Error(`runtime fragments refresh failed: HTTP ${res.status} ${bodyText}`.trim());
+  }
+
+  let refreshed: boolean | null = null;
+  let updateCount: number | null = null;
+  if (bodyText) {
+    try {
+      const parsed = JSON.parse(bodyText) as { refreshed?: unknown; update_count?: unknown };
+      refreshed = typeof parsed.refreshed === 'boolean' ? parsed.refreshed : null;
+      updateCount = typeof parsed.update_count === 'number' ? parsed.update_count : null;
+    } catch {
+      refreshed = null;
+      updateCount = null;
+    }
+  }
+  console.log(
+    `scheduled: runtime_fragments_refresh route=internal/refresh/runtime-fragments refreshed=${refreshed === null ? '-' : refreshed ? 1 : 0} update_count=${updateCount ?? '-'}`,
+  );
 }
 
 async function refreshHomepageSnapshotViaService(
@@ -1403,6 +1449,14 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
   });
 
   try {
+    if (env.SELF && shouldRefreshRuntimeFragmentsViaService(env)) {
+      ctx.waitUntil(
+        refreshRuntimeFragmentsViaService(env).catch((err) => {
+          console.warn('runtime fragments refresh: service refresh failed', err);
+        }),
+      );
+    }
+
     const [settings, due, hasWebhookNotifications] = await Promise.all([
       readSettings(env.DB),
       listDueMonitors(env.DB, checkedAt),
