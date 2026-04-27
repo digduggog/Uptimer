@@ -878,6 +878,7 @@ type HomepageRefreshLease = HomepageRefreshLeaseGuard & {
 
 export type PreparedHomepageSnapshotWrite = {
   statement: D1PreparedStatement;
+  payloadStatement?: D1PreparedStatement;
   generatedAt: number;
   prime: () => void;
 };
@@ -892,6 +893,7 @@ export function prepareHomepageSnapshotWrite(
     name: string;
     expiresAt: number;
   },
+  writePayloadSnapshot = false,
 ): PreparedHomepageSnapshotWrite {
   const payloadBodyJson = withTraceSync(trace, 'homepage_write_stringify_payload', () =>
     JSON.stringify(payload),
@@ -918,6 +920,19 @@ export function prepareHomepageSnapshotWrite(
       now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
       lease,
     ),
+    ...(writePayloadSnapshot
+      ? {
+          payloadStatement: homepageSnapshotUpsertStatement(
+            db,
+            SNAPSHOT_KEY,
+            render.generated_at,
+            payloadBodyJson,
+            now,
+            now + FUTURE_SNAPSHOT_TOLERANCE_SECONDS,
+            lease,
+          ),
+        }
+      : {}),
     generatedAt: render.generated_at,
     prime: () => {
       primeHomepageRefreshBaseSnapshotCache({

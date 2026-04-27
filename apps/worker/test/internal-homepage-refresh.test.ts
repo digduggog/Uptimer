@@ -264,6 +264,7 @@ describe('internal homepage refresh route', () => {
         name: 'snapshot:homepage:refresh',
         expiresAt: now + 55,
       },
+      true,
     );
     expect(homepageWritePrime).toHaveBeenCalledTimes(1);
     expect(tryComputePublicStatusPayloadFromScheduledRuntimeUpdates).toHaveBeenCalledWith({
@@ -495,6 +496,7 @@ describe('internal homepage refresh route', () => {
         name: 'snapshot:homepage:refresh',
         expiresAt: now + 55,
       },
+      true,
     );
   });
 
@@ -670,6 +672,7 @@ describe('internal homepage refresh route', () => {
         name: 'snapshot:homepage:refresh',
         expiresAt: now + 55,
       },
+      true,
     );
     expect(releaseLease).toHaveBeenCalledWith(env.DB, 'snapshot:homepage:refresh', now + 55);
   });
@@ -723,6 +726,7 @@ describe('internal homepage refresh route', () => {
         name: 'snapshot:homepage:refresh',
         expiresAt: now + 55,
       },
+      true,
     );
   });
 

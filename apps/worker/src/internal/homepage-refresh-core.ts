@@ -636,6 +636,7 @@ export async function runInternalHomepageRefreshCore({
         writeTrace,
         baseSnapshot.seedDataSnapshot,
         homepageWriteLease,
+        true,
       );
       const preparedStatusWrite = refreshedStatusPayload
         ? statusSnapshotMod.prepareStatusSnapshotWrite({
@@ -656,20 +657,27 @@ export async function runInternalHomepageRefreshCore({
     const { preparedHomepageWrite, preparedStatusWrite } = detailTrace
       ? detailTrace.time('snapshot_prepare_writes', () => prepareSnapshotWrites(detailTrace))
       : prepareSnapshotWrites();
+    const homepageWriteStatements = [
+      preparedHomepageWrite.statement,
+      ...(preparedHomepageWrite.payloadStatement ? [preparedHomepageWrite.payloadStatement] : []),
+    ];
+    const writeStatements = preparedStatusWrite
+      ? [...homepageWriteStatements, preparedStatusWrite.statement]
+      : homepageWriteStatements;
     if (trace?.enabled && traceResidualDetails) {
-      trace.setLabel('snapshot_write_count', preparedStatusWrite ? 2 : 1);
+      trace.setLabel('snapshot_write_count', writeStatements.length);
     }
     const writeResults = trace
       ? await trace.timeAsync(
-          preparedStatusWrite ? 'snapshot_writes_batch' : 'homepage_refresh_write',
+          writeStatements.length > 1 ? 'snapshot_writes_batch' : 'homepage_refresh_write',
           async () =>
-            preparedStatusWrite
-              ? await env.DB.batch([preparedHomepageWrite.statement, preparedStatusWrite.statement])
-              : [await preparedHomepageWrite.statement.run()],
+            writeStatements.length > 1
+              ? await env.DB.batch(writeStatements)
+              : [await writeStatements[0]!.run()],
         )
-      : preparedStatusWrite
-        ? await env.DB.batch([preparedHomepageWrite.statement, preparedStatusWrite.statement])
-        : [await preparedHomepageWrite.statement.run()];
+      : writeStatements.length > 1
+        ? await env.DB.batch(writeStatements)
+        : [await writeStatements[0]!.run()];
     homepageRefreshLease.assertHeld('finalizing snapshot writes');
     const inspectSnapshotWriteResults = () => {
       const homepageWriteResult = writeResults[0];
@@ -677,7 +685,7 @@ export async function runInternalHomepageRefreshCore({
         throw new Error('homepage snapshot write returned no result');
       }
       const homepageSnapshotWritten = snapshotMod.didApplyHomepageSnapshotWrite(homepageWriteResult);
-      const statusWriteResult = writeResults[1];
+      const statusWriteResult = writeResults[homepageWriteStatements.length];
       const statusSnapshotWritten = refreshedStatusPayload
         ? statusSnapshotMod.didApplyStatusSnapshotWrite(statusWriteResult)
         : false;
