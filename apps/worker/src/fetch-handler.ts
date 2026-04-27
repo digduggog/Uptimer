@@ -235,6 +235,7 @@ const HOT_PUBLIC_CACHE_NAME = 'uptimer-public-hot-v1';
 const HOT_PUBLIC_ORIGIN_CACHE_KEY_PARAM = '__uptimer_origin_cache_key';
 const HOT_PUBLIC_STALE_CACHE_KEY_PARAM = '__uptimer_stale_cache_key';
 const HOT_PUBLIC_CACHED_AT_HEADER = 'X-Uptimer-Hot-Cached-At';
+const HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER = 'X-Uptimer-Hot-Original-Cache-Control';
 const HOT_PUBLIC_STALE_MAX_AGE_SECONDS = 60;
 const HOT_PUBLIC_STALE_STORAGE_TTL_SECONDS = 120;
 const HOT_PUBLIC_CACHE_PATHS = new Set([
@@ -285,11 +286,19 @@ function buildHotPublicCacheKey(
 }
 
 function stripHotPublicCacheInternalHeaders(res: Response): Response {
-  if (!res.headers.has(HOT_PUBLIC_CACHED_AT_HEADER)) {
+  if (
+    !res.headers.has(HOT_PUBLIC_CACHED_AT_HEADER) &&
+    !res.headers.has(HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER)
+  ) {
     return res;
   }
   const out = new Response(res.body, res);
+  const originalCacheControl = out.headers.get(HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER);
   out.headers.delete(HOT_PUBLIC_CACHED_AT_HEADER);
+  out.headers.delete(HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER);
+  if (originalCacheControl) {
+    out.headers.set('Cache-Control', originalCacheControl);
+  }
   return out;
 }
 
@@ -352,7 +361,9 @@ function putHotPublicCache(
 
   const freshCacheKey = buildHotPublicCacheKey(req, origin);
   const staleCacheKey = buildHotPublicCacheKey(req, origin, 'stale');
-  const freshResponse = res.clone();
+  const freshResponse = new Response(res.clone().body, res);
+  freshResponse.headers.set(HOT_PUBLIC_ORIGINAL_CACHE_CONTROL_HEADER, cacheControl);
+  freshResponse.headers.set('Cache-Control', `public, max-age=${HOT_PUBLIC_STALE_MAX_AGE_SECONDS}`);
   const staleResponse = new Response(res.clone().body, res);
   staleResponse.headers.set(HOT_PUBLIC_CACHED_AT_HEADER, String(Math.floor(Date.now() / 1000)));
   staleResponse.headers.set('Cache-Control', `public, max-age=${HOT_PUBLIC_STALE_STORAGE_TTL_SECONDS}`);

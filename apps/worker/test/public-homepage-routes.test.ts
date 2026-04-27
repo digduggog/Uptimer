@@ -440,6 +440,59 @@ describe('public homepage route', () => {
     expect(bodyReads).toEqual(['homepage', 'homepage']);
   });
 
+  it('stores hot-cache fresh entries longer while restoring client cache headers', async () => {
+    const store = new Map<string, Response>();
+    installCacheMock(store);
+    const payload = samplePayload(190);
+    const bodyReads: string[] = [];
+    vi.spyOn(Date, 'now').mockReturnValue(200 * 1000);
+
+    const handlers: FakeD1QueryHandler[] = [
+      {
+        match: 'from public_snapshots',
+        first: (args) => {
+          bodyReads.push(String(args[0]));
+          return args[0] === 'homepage'
+            ? {
+                generated_at: payload.generated_at,
+                body_json: JSON.stringify(payload),
+              }
+            : null;
+        },
+      },
+    ];
+
+    const first = await requestHomepageViaApp(
+      '/api/v1/public/homepage',
+      handlers,
+      'https://one.example.com',
+    );
+    const originalCacheControl = first.headers.get('Cache-Control');
+    expect(first.status).toBe(200);
+    expect(originalCacheControl).toContain('max-age=30');
+
+    await Promise.resolve();
+    const freshEntry = [...store.entries()].find(
+      ([key]) => !key.includes('__uptimer_stale_cache_key'),
+    );
+    expect(freshEntry).toBeTruthy();
+    expect(freshEntry?.[1].headers.get('Cache-Control')).toBe('public, max-age=60');
+    expect(freshEntry?.[1].headers.get('X-Uptimer-Hot-Original-Cache-Control')).toBe(
+      originalCacheControl,
+    );
+
+    const second = await requestHomepageViaApp(
+      '/api/v1/public/homepage',
+      handlers,
+      'https://one.example.com',
+    );
+
+    expect(second.headers.get('Cache-Control')).toBe(originalCacheControl);
+    expect(second.headers.get('X-Uptimer-Hot-Original-Cache-Control')).toBeNull();
+    expect(await second.json()).toEqual(payload);
+    expect(bodyReads).toEqual(['homepage']);
+  });
+
   it('serves a bounded stale hot-cache copy when the fresh worker cache entry misses', async () => {
     const store = new Map<string, Response>();
     installCacheMock(store);
