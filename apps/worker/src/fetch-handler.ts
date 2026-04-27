@@ -232,6 +232,11 @@ function canonicalHotPublicPathname(pathname: string): string {
 }
 
 const HOT_PUBLIC_CACHE_NAME = 'uptimer-public-hot-v1';
+const HOT_PUBLIC_ORIGIN_CACHE_KEY_PARAM = '__uptimer_origin_cache_key';
+const HOT_PUBLIC_STALE_CACHE_KEY_PARAM = '__uptimer_stale_cache_key';
+const HOT_PUBLIC_CACHED_AT_HEADER = 'X-Uptimer-Hot-Cached-At';
+const HOT_PUBLIC_STALE_MAX_AGE_SECONDS = 60;
+const HOT_PUBLIC_STALE_STORAGE_TTL_SECONDS = 120;
 const HOT_PUBLIC_CACHE_PATHS = new Set([
   '/api/v1/public/homepage',
   '/api/v1/public/homepage-artifact',
@@ -264,12 +269,45 @@ function openHotPublicCache(): Promise<Cache> | null {
   return opened;
 }
 
-function buildHotPublicCacheKey(req: Request, origin: string | null): Request {
+function buildHotPublicCacheKey(
+  req: Request,
+  origin: string | null,
+  variant: 'fresh' | 'stale' = 'fresh',
+): Request {
   const url = new URL(req.url);
   if (origin) {
-    url.searchParams.set('__uptimer_origin_cache_key', origin);
+    url.searchParams.set(HOT_PUBLIC_ORIGIN_CACHE_KEY_PARAM, origin);
+  }
+  if (variant === 'stale') {
+    url.searchParams.set(HOT_PUBLIC_STALE_CACHE_KEY_PARAM, '1');
   }
   return new Request(url.toString(), { method: 'GET' });
+}
+
+function stripHotPublicCacheInternalHeaders(res: Response): Response {
+  if (!res.headers.has(HOT_PUBLIC_CACHED_AT_HEADER)) {
+    return res;
+  }
+  const out = new Response(res.body, res);
+  out.headers.delete(HOT_PUBLIC_CACHED_AT_HEADER);
+  return out;
+}
+
+function toHotPublicStaleResponse(res: Response): Response | null {
+  const cachedAtRaw = res.headers.get(HOT_PUBLIC_CACHED_AT_HEADER);
+  const cachedAt = cachedAtRaw ? Number.parseInt(cachedAtRaw, 10) : NaN;
+  if (!Number.isFinite(cachedAt)) {
+    return null;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (now - cachedAt > HOT_PUBLIC_STALE_MAX_AGE_SECONDS) {
+    return null;
+  }
+
+  const out = new Response(res.body, res);
+  out.headers.delete(HOT_PUBLIC_CACHED_AT_HEADER);
+  out.headers.set('Cache-Control', 'public, max-age=0, stale-while-revalidate=30, stale-if-error=30');
+  return out;
 }
 
 async function matchHotPublicCache(req: Request, origin: string | null): Promise<Response | null> {
@@ -279,7 +317,14 @@ async function matchHotPublicCache(req: Request, origin: string | null): Promise
   }
 
   try {
-    return (await (await cachePromise).match(buildHotPublicCacheKey(req, origin))) ?? null;
+    const cache = await cachePromise;
+    const fresh = await cache.match(buildHotPublicCacheKey(req, origin));
+    if (fresh) {
+      return stripHotPublicCacheInternalHeaders(fresh);
+    }
+
+    const stale = await cache.match(buildHotPublicCacheKey(req, origin, 'stale'));
+    return stale ? toHotPublicStaleResponse(stale) : null;
   } catch (err) {
     console.warn('public hot cache: match failed', err);
     return null;
@@ -305,10 +350,21 @@ function putHotPublicCache(
     return;
   }
 
-  const cacheKey = buildHotPublicCacheKey(req, origin);
+  const freshCacheKey = buildHotPublicCacheKey(req, origin);
+  const staleCacheKey = buildHotPublicCacheKey(req, origin, 'stale');
+  const freshResponse = res.clone();
+  const staleResponse = new Response(res.clone().body, res);
+  staleResponse.headers.set(HOT_PUBLIC_CACHED_AT_HEADER, String(Math.floor(Date.now() / 1000)));
+  staleResponse.headers.set('Cache-Control', `public, max-age=${HOT_PUBLIC_STALE_STORAGE_TTL_SECONDS}`);
+
   ctx.waitUntil(
     cachePromise
-      .then(async (cache) => await cache.put(cacheKey, res.clone()))
+      .then(async (cache) => {
+        await Promise.all([
+          cache.put(freshCacheKey, freshResponse),
+          cache.put(staleCacheKey, staleResponse),
+        ]);
+      })
       .catch((err) => {
         console.warn('public hot cache: put failed', err);
       }),
