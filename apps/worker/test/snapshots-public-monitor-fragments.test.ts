@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildHomepageEnvelopeFragmentWrite,
   buildHomepageMonitorFragmentWrites,
   buildMonitorRuntimeUpdateFragmentWrites,
+  buildStatusEnvelopeFragmentWrite,
   buildStatusMonitorFragmentWrites,
+  HOMEPAGE_ENVELOPE_FRAGMENT_KEY,
   HOMEPAGE_MONITOR_FRAGMENTS_KEY,
   MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
   parseMonitorRuntimeUpdateFragmentRows,
   parsePublicMonitorFragmentKey,
+  PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY,
   readMonitorRuntimeUpdateFragments,
+  STATUS_ENVELOPE_FRAGMENT_KEY,
   STATUS_MONITOR_FRAGMENTS_KEY,
   toPublicMonitorFragmentKey,
 } from '../src/snapshots/public-monitor-fragments';
@@ -187,6 +192,37 @@ describe('snapshots/public-monitor-fragments', () => {
     expect(writes[0]!.bodyJson).toContain('heartbeat_strip');
     expect(writes[0]!.bodyJson).toContain('uptime_day_strip');
     expect(writes[0]!.bodyJson).not.toContain('bootstrap_mode');
+  });
+
+  it('serializes status and homepage envelopes without monitor histories', () => {
+    const statusWrite = buildStatusEnvelopeFragmentWrite(statusPayload(), 1_700_000_005);
+    const homepageWrite = buildHomepageEnvelopeFragmentWrite(homepagePayload(), 1_700_000_005);
+
+    expect(statusWrite).toMatchObject({
+      snapshotKey: STATUS_ENVELOPE_FRAGMENT_KEY,
+      fragmentKey: PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY,
+      generatedAt: 1_700_000_000,
+      updatedAt: 1_700_000_005,
+    });
+    expect(homepageWrite).toMatchObject({
+      snapshotKey: HOMEPAGE_ENVELOPE_FRAGMENT_KEY,
+      fragmentKey: PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY,
+      generatedAt: 1_700_000_000,
+      updatedAt: 1_700_000_005,
+    });
+
+    const statusEnvelope = JSON.parse(statusWrite.bodyJson);
+    const homepageEnvelope = JSON.parse(homepageWrite.bodyJson);
+    expect(statusEnvelope).toMatchObject({ site_title: 'Uptimer', summary: { up: 2 } });
+    expect(homepageEnvelope).toMatchObject({
+      site_title: 'Uptimer',
+      bootstrap_mode: 'full',
+      summary: { up: 2 },
+    });
+    expect(statusEnvelope).not.toHaveProperty('monitors');
+    expect(homepageEnvelope).not.toHaveProperty('monitors');
+    expect(statusWrite.bodyJson).not.toContain('heartbeats');
+    expect(homepageWrite.bodyJson).not.toContain('heartbeat_strip');
   });
 
   it('serializes compact monitor runtime update fragments with latest update wins', () => {

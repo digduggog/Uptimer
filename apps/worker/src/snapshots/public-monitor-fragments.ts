@@ -12,7 +12,10 @@ import {
 
 export const STATUS_MONITOR_FRAGMENTS_KEY = 'status:monitors';
 export const HOMEPAGE_MONITOR_FRAGMENTS_KEY = 'homepage:monitors';
+export const STATUS_ENVELOPE_FRAGMENT_KEY = 'status:envelope';
+export const HOMEPAGE_ENVELOPE_FRAGMENT_KEY = 'homepage:envelope';
 export const MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY = 'monitor-runtime:updates';
+export const PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY = 'envelope';
 
 const MONITOR_FRAGMENT_PREFIX = 'monitor:';
 
@@ -121,6 +124,49 @@ export function buildHomepageMonitorFragmentWrites(
   }
 
   return writes;
+}
+
+export type PublicStatusEnvelopeFragment = Omit<PublicStatusResponse, 'monitors'>;
+export type PublicHomepageEnvelopeFragment = Omit<PublicHomepageResponse, 'monitors'>;
+
+export function toStatusEnvelopeFragment(
+  payload: PublicStatusResponse,
+): PublicStatusEnvelopeFragment {
+  const { monitors: _monitors, ...envelope } = payload;
+  return envelope;
+}
+
+export function toHomepageEnvelopeFragment(
+  payload: PublicHomepageResponse,
+): PublicHomepageEnvelopeFragment {
+  const { monitors: _monitors, ...envelope } = payload;
+  return envelope;
+}
+
+export function buildStatusEnvelopeFragmentWrite(
+  payload: PublicStatusResponse,
+  updatedAt: number,
+): PublicSnapshotFragmentWrite {
+  return buildMonitorFragmentWrite({
+    snapshotKey: STATUS_ENVELOPE_FRAGMENT_KEY,
+    fragmentKey: PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY,
+    generatedAt: payload.generated_at,
+    bodyJson: JSON.stringify(toStatusEnvelopeFragment(payload)),
+    updatedAt,
+  });
+}
+
+export function buildHomepageEnvelopeFragmentWrite(
+  payload: PublicHomepageResponse,
+  updatedAt: number,
+): PublicSnapshotFragmentWrite {
+  return buildMonitorFragmentWrite({
+    snapshotKey: HOMEPAGE_ENVELOPE_FRAGMENT_KEY,
+    fragmentKey: PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY,
+    generatedAt: payload.generated_at,
+    bodyJson: JSON.stringify(toHomepageEnvelopeFragment(payload)),
+    updatedAt,
+  });
 }
 
 function toCompactRuntimeUpdate(update: MonitorRuntimeUpdate): unknown[] {
