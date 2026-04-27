@@ -634,6 +634,12 @@ export async function runInternalHomepageRefreshCore({
           expiresAt: activeHomepageRefreshLease.getExpiresAt(),
         }
       : undefined;
+    const shouldWriteHomepagePayloadSnapshot = !normalizeInternalFalsy(
+      env.UPTIMER_HOMEPAGE_PAYLOAD_SNAPSHOT_WRITE,
+    );
+    if (trace?.enabled) {
+      trace.setLabel('homepage_payload_snapshot_write', shouldWriteHomepagePayloadSnapshot ? 1 : 0);
+    }
     const prepareSnapshotWrites = (writeTrace?: Trace) => {
       const preparedHomepageWrite = snapshotMod.prepareHomepageSnapshotWrite(
         env.DB,
@@ -642,7 +648,7 @@ export async function runInternalHomepageRefreshCore({
         writeTrace,
         baseSnapshot.seedDataSnapshot,
         homepageWriteLease,
-        true,
+        shouldWriteHomepagePayloadSnapshot,
       );
       const preparedStatusWrite = refreshedStatusPayload
         ? statusSnapshotMod.prepareStatusSnapshotWrite({
