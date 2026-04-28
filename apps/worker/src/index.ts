@@ -126,7 +126,11 @@ const internalShardedPublicSnapshotSeedBodySchema = z.object({
 });
 
 const internalShardedPublicSnapshotContinuationBodySchema = z.discriminatedUnion('step', [
-  z.object({ step: z.literal('runtime') }),
+  z.object({
+    step: z.literal('runtime'),
+    update_offset: z.number().int().min(0).optional(),
+    update_limit: z.number().int().min(1).max(10).optional(),
+  }),
   z.object({
     step: z.literal('seed'),
     kind: z.enum(['homepage', 'status']),
@@ -523,7 +527,15 @@ async function handleInternalShardedPublicSnapshotContinuation(
     ctx,
     now: Math.floor(Date.now() / 1000),
     step: parsed.data.step === 'runtime'
-      ? { step: 'runtime' }
+      ? {
+          step: 'runtime',
+          ...(parsed.data.update_offset !== undefined
+            ? { updateOffset: parsed.data.update_offset }
+            : {}),
+          ...(parsed.data.update_limit !== undefined
+            ? { updateLimit: parsed.data.update_limit }
+            : {}),
+        }
       : parsed.data.step === 'assemble'
         ? { step: 'assemble', kind: parsed.data.kind }
         : {
@@ -536,7 +548,11 @@ async function handleInternalShardedPublicSnapshotContinuation(
   });
   const toResponseStep = (step: NonNullable<typeof result.nextStep>) =>
     step.step === 'runtime'
-      ? { step: 'runtime' }
+      ? {
+          step: 'runtime',
+          ...(step.updateOffset !== undefined ? { update_offset: step.updateOffset } : {}),
+          ...(step.updateLimit !== undefined ? { update_limit: step.updateLimit } : {}),
+        }
       : step.step === 'assemble'
         ? { step: 'assemble', kind: step.kind }
         : {
@@ -564,6 +580,10 @@ async function handleInternalShardedPublicSnapshotContinuation(
       ...(result.writeCount !== undefined ? { write_count: result.writeCount } : {}),
       ...(result.invalidCount !== undefined ? { invalid_count: result.invalidCount } : {}),
       ...(result.staleCount !== undefined ? { stale_count: result.staleCount } : {}),
+      ...(result.updateOffset !== undefined ? { update_offset: result.updateOffset } : {}),
+      ...(result.updateLimit !== undefined ? { update_limit: result.updateLimit } : {}),
+      ...(result.rowCount !== undefined ? { row_count: result.rowCount } : {}),
+      ...(result.hasMore !== undefined ? { has_more: result.hasMore } : {}),
       ...(result.skipped ? { skipped: result.skipped } : {}),
       ...(result.error ? { error: true } : {}),
       ...(result.errorName ? { error_name: result.errorName } : {}),

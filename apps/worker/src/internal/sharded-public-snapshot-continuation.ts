@@ -1,5 +1,8 @@
 import type { Env } from '../env';
-import { refreshMonitorRuntimeSnapshotFromUpdateFragments } from './runtime-fragments-refresh-core';
+import {
+  refreshMonitorRuntimeSnapshotFromUpdateFragments,
+  refreshMonitorRuntimeSnapshotFromUpdateFragmentsPage,
+} from './runtime-fragments-refresh-core';
 import {
   assembleShardedPublicSnapshot,
   seedShardedPublicSnapshotFragments,
@@ -9,7 +12,7 @@ import {
 } from './sharded-public-snapshot-core';
 
 export type ShardedPublicSnapshotContinuationStep =
-  | { step: 'runtime' }
+  | { step: 'runtime'; updateOffset?: number; updateLimit?: number }
   | {
       step: 'seed';
       kind: ShardedPublicSnapshotKind;
@@ -36,6 +39,10 @@ export type ShardedPublicSnapshotContinuationResult = {
   writeCount?: number;
   invalidCount?: number;
   staleCount?: number;
+  updateOffset?: number;
+  updateLimit?: number;
+  rowCount?: number;
+  hasMore?: boolean;
   skipped?: string;
   error?: boolean;
   errorName?: string;
@@ -59,6 +66,13 @@ function readBoundedMonitorLimit(env: Env, requested?: number): number {
   const raw = requested ?? (env as unknown as Record<string, unknown>).UPTIMER_SHARDED_FRAGMENT_SEED_BATCH_SIZE;
   const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN;
   if (!Number.isFinite(parsed)) return DEFAULT_MONITOR_LIMIT;
+  return Math.max(1, Math.min(10, Math.floor(parsed)));
+}
+
+function readOptionalBoundedRuntimeUpdateLimit(env: Env, requested?: number): number | null {
+  const raw = requested ?? (env as unknown as Record<string, unknown>).UPTIMER_SHARDED_RUNTIME_UPDATE_BATCH_SIZE;
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(parsed)) return null;
   return Math.max(1, Math.min(10, Math.floor(parsed)));
 }
 
@@ -92,7 +106,9 @@ function shouldLogDiagnostics(env: Env): boolean {
 }
 
 function diagnosticStepName(step: ShardedPublicSnapshotContinuationStep): string {
-  if (step.step === 'runtime') return 'runtime';
+  if (step.step === 'runtime') {
+    return step.updateLimit !== undefined ? `runtime:${step.updateOffset ?? 0}` : 'runtime';
+  }
   if (step.step === 'assemble') return `assemble:${step.kind}`;
   return `seed:${step.kind}:${step.part}:${step.monitorOffset ?? 0}`;
 }
@@ -116,6 +132,10 @@ function logContinuationDiagnostics(
     result.assembled !== undefined ? `assembled=${result.assembled ? 1 : 0}` : null,
     result.monitorCount !== undefined ? `monitors=${result.monitorCount}` : null,
     result.writeCount !== undefined ? `writes=${result.writeCount}` : null,
+    result.updateOffset !== undefined ? `update_offset=${result.updateOffset}` : null,
+    result.updateLimit !== undefined ? `update_limit=${result.updateLimit}` : null,
+    result.rowCount !== undefined ? `rows=${result.rowCount}` : null,
+    result.hasMore !== undefined ? `has_more=${result.hasMore ? 1 : 0}` : null,
     result.invalidCount !== undefined ? `invalid=${result.invalidCount}` : null,
     result.staleCount !== undefined ? `stale=${result.staleCount}` : null,
     result.skipped ? `skipped=${result.skipped}` : null,
@@ -192,7 +212,11 @@ function toWireStep(step: ShardedPublicSnapshotContinuationStep): Record<string,
   if (step.step === 'assemble') {
     return { step: step.step, kind: step.kind };
   }
-  return { step: step.step };
+  return {
+    step: step.step,
+    ...(step.updateOffset !== undefined ? { update_offset: step.updateOffset } : {}),
+    ...(step.updateLimit !== undefined ? { update_limit: step.updateLimit } : {}),
+  };
 }
 
 function queueContinuation(
@@ -264,13 +288,26 @@ export async function runShardedPublicSnapshotContinuation(opts: {
       logContinuationDiagnostics(opts.env, skippedResult);
       return skippedResult;
     }
+    const runtimeLimit = readOptionalBoundedRuntimeUpdateLimit(opts.env, opts.step.updateLimit);
+    const updateOffset = Math.max(0, Math.floor(opts.step.updateOffset ?? 0));
     const operationStartedAt = diagnostics ? Date.now() : 0;
-    const result = await refreshMonitorRuntimeSnapshotFromUpdateFragments({
-      env: opts.env,
-      now: opts.now,
-    });
+    const result = runtimeLimit
+      ? await refreshMonitorRuntimeSnapshotFromUpdateFragmentsPage({
+          env: opts.env,
+          now: opts.now,
+          offset: updateOffset,
+          limit: runtimeLimit,
+        })
+      : await refreshMonitorRuntimeSnapshotFromUpdateFragments({
+          env: opts.env,
+          now: opts.now,
+        });
     const operationMs = diagnostics ? Date.now() - operationStartedAt : undefined;
-    const nextSteps = firstSeedSteps(readBoundedMonitorLimit(opts.env));
+    const nextSteps: ShardedPublicSnapshotContinuationStep[] = !result.ok
+      ? []
+      : runtimeLimit && result.hasMore
+        ? [{ step: 'runtime', updateOffset: updateOffset + runtimeLimit, updateLimit: runtimeLimit }]
+        : firstSeedSteps(readBoundedMonitorLimit(opts.env));
     const queueStartedAt = diagnostics ? Date.now() : 0;
     const continuedCount = queueContinuations(opts.env, opts.ctx, nextSteps);
     const queueMs = diagnostics ? Date.now() - queueStartedAt : undefined;
@@ -285,6 +322,14 @@ export async function runShardedPublicSnapshotContinuation(opts: {
       continued,
       ...(continued ? { nextSteps: nextSteps.slice(0, continuedCount) } : {}),
       ...(result.skip ? { skipped: result.skip } : {}),
+      ...(runtimeLimit
+        ? {
+            updateOffset: result.updateOffset ?? updateOffset,
+            updateLimit: result.updateLimit ?? runtimeLimit,
+            rowCount: result.rowCount ?? 0,
+            hasMore: result.hasMore ?? false,
+          }
+        : {}),
       ...(diagnostics
         ? {
             diagnosticStep,

@@ -386,6 +386,81 @@ describe('internal sharded public snapshot continuation route', () => {
     ]);
   });
 
+  it('runs one paged runtime update step before queuing the next runtime page', async () => {
+    const selfRequests: Request[] = [];
+    const env = {
+      DB: createFakeD1Database([
+        {
+          match: 'from public_snapshot_fragments',
+          all: (args) => {
+            expect(args).toEqual(['monitor-runtime:updates', 2, 0]);
+            return [
+              {
+                fragment_key: 'monitor:1',
+                generated_at: 1,
+                body_json: '[1,60,1,1,"up","up",21]',
+                updated_at: 1,
+              },
+              {
+                fragment_key: 'monitor:2',
+                generated_at: 1,
+                body_json: '[2,60,1,1,"up","up",22]',
+                updated_at: 1,
+              },
+            ];
+          },
+        },
+      ]),
+      ADMIN_TOKEN: 'test-admin-token',
+      UPTIMER_SCHEDULED_SHARDED_CONTINUATION: '1',
+      UPTIMER_SCHEDULED_RUNTIME_FRAGMENT_REFRESH: '1',
+      UPTIMER_SHARDED_RUNTIME_UPDATE_BATCH_SIZE: '1',
+      SELF: {
+        fetch: vi.fn(async (request: Request) => {
+          selfRequests.push(request);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }),
+      },
+    } as unknown as Env;
+    const waitUntil = vi.fn();
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/continue/sharded-public-snapshot', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify({ step: 'runtime' }),
+      }),
+      env,
+      { waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      ok: true,
+      step: 'runtime',
+      refreshed: false,
+      continued: true,
+      monitor_count: 0,
+      update_offset: 0,
+      update_limit: 1,
+      row_count: 1,
+      has_more: true,
+      skipped: 'no_updates',
+      next_steps: [{ step: 'runtime', update_offset: 1, update_limit: 1 }],
+    });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+    await expect(selfRequests[0]!.json()).resolves.toEqual({
+      step: 'runtime',
+      update_offset: 1,
+      update_limit: 1,
+    });
+  });
+
   it('emits bounded continuation diagnostics when explicitly enabled', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const env = {
